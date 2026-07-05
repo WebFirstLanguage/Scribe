@@ -1,4 +1,5 @@
 # Generated bundles produced by build/bundle.sh, tests/run.sh, examples/run.sh
 build/*.run.wfl
 build/*.bundle.wfl
+build/*.tmp
 *.debug.txt

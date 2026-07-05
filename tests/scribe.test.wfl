@@ -204,3 +204,24 @@ describe "verbatim":
     end test
 
 end describe
+
+describe "include and inheritance":
+
+    test "include renders a partial with the current context":
+        open file at "build/_scribe_partial.tmp" for writing as fh
+        wait for write content "P:{{ user.name }}" into fh
+        close file fh
+        store got as scribe_render of "<{% include 'build/_scribe_partial.tmp' %}>" and t_ctx
+        expect got to equal "<P:Alice>"
+    end test
+
+    test "extends overrides one block and keeps the default of another":
+        open file at "build/_scribe_base.tmp" for writing as fb
+        wait for write content "A{% block one %}D1{% endblock %}B{% block two %}D2{% endblock %}C" into fb
+        close file fb
+        store child as "{% extends 'build/_scribe_base.tmp' %}{% block two %}OVER{% endblock %}"
+        store got as scribe_render of child and t_ctx
+        expect got to equal "AD1BOVERC"
+    end test
+
+end describe

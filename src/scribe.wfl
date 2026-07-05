@@ -920,6 +920,31 @@ define action called scribe_set_node with parameters sc_name and sc_expr:
     return m
 end action
 
+define action called scribe_include_node with parameters sc_expr:
+    create map m:
+        "kind" is "include"
+        "expr" is sc_expr
+    end map
+    return m
+end action
+
+define action called scribe_extends_node with parameters sc_expr:
+    create map m:
+        "kind" is "extends"
+        "expr" is sc_expr
+    end map
+    return m
+end action
+
+define action called scribe_block_node with parameters sc_name and sc_body:
+    create map m:
+        "kind" is "block"
+        "name" is sc_name
+        "body" is sc_body
+    end map
+    return m
+end action
+
 define action called scribe_mk_branch with parameters sc_cond and sc_body:
     create map m:
         "cond" is sc_cond
@@ -1031,8 +1056,24 @@ define action called scribe_parse_seq with parameters sc_toks and sc_pos and sc_
                                 push with sc_nodes and (scribe_parse_set of sc_tagsrc)
                                 change p to p plus 1
                             otherwise:
-                                push with sc_nodes and (scribe_text_node of ("[Scribe error: unknown tag '" with firstword with "']"))
-                                change p to p plus 1
+                                check if firstword is "include":
+                                    push with sc_nodes and (scribe_include_node of (scribe_after_word of sc_tagsrc and "include"))
+                                    change p to p plus 1
+                                otherwise:
+                                    check if firstword is "extends":
+                                        push with sc_nodes and (scribe_extends_node of (scribe_after_word of sc_tagsrc and "extends"))
+                                        change p to p plus 1
+                                    otherwise:
+                                        check if firstword is "block":
+                                            store res_block as scribe_parse_block of sc_toks and (p plus 1) and sc_tagsrc
+                                            push with sc_nodes and (res_block["node"])
+                                            change p to res_block["pos"]
+                                        otherwise:
+                                            push with sc_nodes and (scribe_text_node of ("[Scribe error: unknown tag '" with firstword with "']"))
+                                            change p to p plus 1
+                                        end check
+                                    end check
+                                end check
                             end check
                         end check
                     end check
@@ -1140,6 +1181,28 @@ define action called scribe_parse_set with parameters sc_tagsrc:
     return scribe_set_node of sc_name and sc_expr
 end action
 
+// block NAME ... endblock
+define action called scribe_parse_block with parameters sc_toks and sc_pos and sc_tagsrc:
+    store block_name as scribe_after_word of sc_tagsrc and "block"
+    store block_stops as ["endblock"]
+    store seq as scribe_parse_seq of sc_toks and sc_pos and block_stops
+    store p as seq["pos"]
+    store stopmark as seq["stopmark"]
+    check if stopmark is "endblock":
+        change p to p plus 1
+    end check
+    create map node:
+        "kind" is "block"
+        "name" is block_name
+        "body" is seq["nodes"]
+    end map
+    create map result:
+        "node" is node
+        "pos" is p
+    end map
+    return result
+end action
+
 // Parse the whole token list into a node list.
 define action called scribe_parse with parameters sc_toks:
     store no_stops as []
@@ -1212,6 +1275,14 @@ define action called scribe_render_nodes with parameters sc_nodes and sc_ctx and
                     otherwise:
                         check if knd is "for":
                             change out to out with (scribe_render_for of sc_node and sc_ctx and sc_scope)
+                        otherwise:
+                            check if knd is "include":
+                                change out to out with (scribe_render_include of sc_node and sc_ctx and sc_scope)
+                            otherwise:
+                                check if knd is "block":
+                                    change out to out with (scribe_render_block of sc_node and sc_ctx and sc_scope)
+                                end check
+                            end check
                         end check
                     end check
                 end check
@@ -1223,21 +1294,92 @@ end action
 
 
 // ----------------------------------------------------------------------------
-// Section 5 — public API
+// Section 5 — inheritance: include, block, extends
+//
+// Template inheritance is threaded through the overlay scope. A child template
+// that {% extends %} a parent contributes its {% block %} bodies as scope
+// bindings named "__scblock__<name>"; when the parent renders a {% block %} it
+// renders the child's override if one is bound, otherwise its own default body.
 // ----------------------------------------------------------------------------
+
+// Read a file's whole contents as text.
+define action called scribe_read_file with parameters sc_path:
+    open file at sc_path for reading as fh
+    wait for store sc_data as read content from fh
+    close file fh
+    return sc_data
+end action
+
+// {% include "path" %} — render another template with the current context.
+define action called scribe_render_include with parameters sc_node and sc_ctx and sc_scope:
+    store sc_path as scribe_to_text of (scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope)
+    store sc_src as scribe_read_file of sc_path
+    store inc_toks as scribe_lex of sc_src
+    store inc_nodes as scribe_parse of inc_toks
+    return scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
+end action
+
+// {% block name %} — render the child's override if bound, else the default.
+define action called scribe_render_block with parameters sc_node and sc_ctx and sc_scope:
+    store bkey as "__scblock__" with (sc_node["name"])
+    store override as scribe_lookup of bkey and sc_ctx and sc_scope
+    check if (typeof of override) is "List":
+        return scribe_render_nodes of override and sc_ctx and sc_scope
+    end check
+    return scribe_render_nodes of (sc_node["body"]) and sc_ctx and sc_scope
+end action
+
+// Find an {% extends %} node's path expression among top-level nodes; nothing
+// if the template does not extend a parent.
+define action called scribe_find_extends with parameters sc_nodes:
+    for each sc_node in sc_nodes:
+        check if (sc_node["kind"]) is "extends":
+            return sc_node["expr"]
+        end check
+    end for
+    return nothing
+end action
+
+// Bind each top-level {% block %} of a child as a "__scblock__<name>" override.
+define action called scribe_collect_blocks with parameters sc_nodes and sc_scope:
+    for each sc_node in sc_nodes:
+        check if (sc_node["kind"]) is "block":
+            store bkey as "__scblock__" with (sc_node["name"])
+            push with sc_scope and (scribe_binding of bkey and (sc_node["body"]))
+        end check
+    end for
+    return yes
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 6 — public API
+// ----------------------------------------------------------------------------
+
+// Render already-parsed nodes, honouring {% extends %} for inheritance.
+define action called scribe_render_root with parameters sc_nodes and sc_ctx and sc_scope:
+    store ext as scribe_find_extends of sc_nodes
+    check if ext is nothing:
+        return scribe_render_nodes of sc_nodes and sc_ctx and sc_scope
+    end check
+    store ignore as scribe_collect_blocks of sc_nodes and sc_scope
+    store parent_path as scribe_to_text of (scribe_eval_expr of ext and sc_ctx and sc_scope)
+    store parent_src as scribe_read_file of parent_path
+    store parent_toks as scribe_lex of parent_src
+    store parent_nodes as scribe_parse of parent_toks
+    return scribe_render_nodes of parent_nodes and sc_ctx and sc_scope
+end action
 
 // Render a template string against a context map. Returns the output text.
 define action called scribe_render with parameters sc_template and sc_context:
     store sc_toks as scribe_lex of sc_template
     store sc_nodes as scribe_parse of sc_toks
     store sc_scope as []
-    return scribe_render_nodes of sc_nodes and sc_context and sc_scope
+    return scribe_render_root of sc_nodes and sc_context and sc_scope
 end action
 
 // Read a template file from disk and render it against a context map.
 define action called scribe_render_file with parameters sc_path and sc_context:
-    open file at sc_path for reading as fh
-    wait for store tpl_src as read content from fh
-    close file fh
+    store tpl_src as scribe_read_file of sc_path
     return scribe_render of tpl_src and sc_context
 end action

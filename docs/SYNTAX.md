@@ -153,6 +153,49 @@ is scoped to the loop body.
 
 ---
 
+## Includes — `{% include %}`
+
+Render another template file inline, sharing the current context:
+
+```twig
+<body>
+  {{ content }}
+  {% include "partials/footer.html" %}
+</body>
+```
+
+The path is an expression, so `{% include partial_name %}` (a variable) works
+too. Paths are resolved relative to the process's working directory.
+
+## Template inheritance — `{% extends %}` / `{% block %}`
+
+A **base** template defines named blocks with default content:
+
+```twig
+{# base.html #}
+<!doctype html>
+<title>{% block title %}My Site{% endblock %}</title>
+<body>
+  <main>{% block content %}{% endblock %}</main>
+  {% include "footer.html" %}
+</body>
+```
+
+A **child** template extends the base and overrides the blocks it cares about;
+any block it leaves out keeps the base's default:
+
+```twig
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+  <h1>Welcome</h1>
+{% endblock %}
+```
+
+`{% extends %}` must name the parent template; the child's content outside of
+`{% block %}` tags is ignored (as in Twig). A single level of inheritance is
+supported.
+
 ## Verbatim — `{% verbatim %}`
 
 Emit Scribe syntax literally, without interpreting it:
@@ -192,8 +235,9 @@ paths in the template walk them.
 
 ## Known limitations (current version)
 
-* Template inheritance (`extends` / `block`) and `include` are not yet
-  implemented — see the roadmap in [DESIGN.md](DESIGN.md).
+* Template inheritance is single-level: a child `{% extends %}` a base, but the
+  base cannot itself extend a grandparent yet. Macros are not yet implemented —
+  see the roadmap in [DESIGN.md](DESIGN.md).
 * `for key, value in map` is not supported (WFL does not expose map-key
   iteration); iterate lists instead.
 * A rendered result that is exactly the two characters `[]` is affected by a

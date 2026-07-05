@@ -45,6 +45,9 @@ secure unless you explicitly opt out.
 - Variables: `{% set total = a + b %}`
 - Expressions: `+ - * /`, `~` concat, `== != < > <= >=`, `and / or / not`,
   parentheses, string & number literals, `true / false / null`
+- Includes: `{% include "partial.html" %}` (shares the current context)
+- Template inheritance: `{% extends "base.html" %}` with
+  `{% block name %}…{% endblock %}` overrides and defaults
 - Comments: `{# … #}`
 - Raw blocks: `{% verbatim %}…{% endverbatim %}`
 
@@ -94,7 +97,10 @@ The `context` is an ordinary WFL map. Nest maps and lists to model richer data.
 examples/run.sh examples/blog.wfl /path/to/wfl
 ```
 
-The expected output is checked in at `examples/blog.expected.html`.
+`examples/inheritance.wfl` shows `{% extends %}` / `{% block %}` / `{% include %}`
+against the templates in `examples/templates/` (run it from the repo root so the
+relative paths resolve). Expected output for both is checked in next to each
+example (`*.expected.html`).
 
 ## Running the tests
 
@@ -129,9 +135,9 @@ Scribe/
 
 ## Roadmap
 
-Planned next: template inheritance (`extends` / `block`), `include`, macros,
-`for key, value in map` (pending WFL map-key iteration), whitespace control,
-and more filters/functions. Details in [docs/DESIGN.md](docs/DESIGN.md).
+Planned next: multi-level inheritance, macros (`{% macro %}` / `{% import %}`),
+`for key, value in map` (pending WFL map-key iteration), whitespace control, and
+more filters/functions. Details in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Upstream WFL issues found while building Scribe
 

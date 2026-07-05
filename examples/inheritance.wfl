@@ -1,0 +1,21 @@
+// Scribe example — template inheritance with {% extends %}, {% block %}, and
+// {% include %}. Run this from the repository root so the relative template
+// paths resolve:
+//     examples/run.sh examples/inheritance.wfl /path/to/wfl
+
+create map ctx:
+    "site" is "Ada's Notebook"
+    "heading" is "Notes on <Engines>"
+    "posts" is ["Analytical Engine", "Bernoulli Numbers"]
+end map
+
+// A child page that extends examples/templates/base.html and fills in blocks.
+// The title block is left to the parent's default; content is overridden.
+store child as "{% extends \"examples/templates/base.html\" %}
+{% block content %}
+    <h1>{{ heading }}</h1>
+    <ul>{% for p in posts %}<li>{{ p }}</li>{% endfor %}</ul>
+{% endblock %}"
+
+store html as scribe_render of child and ctx
+display html

@@ -120,6 +120,8 @@ Total: {{ order.total }}
 | Conditionals | `{% if EXPR %}` … `{% elseif EXPR %}` … `{% else %}` … `{% endif %}` |
 | Loops | `{% for x in EXPR %}` … `{% else %}` (when empty) … `{% endfor %}` |
 | Assignment | `{% set name = EXPR %}` |
+| Include | `{% include "path" %}` (renders another file with the current context) |
+| Inheritance | `{% extends "base" %}` + `{% block name %}` … `{% endblock %}` |
 | Raw block | `{% verbatim %}` … `{% endverbatim %}` (emits its body literally) |
 
 Inside a `{% for %}` body a `loop` variable is available:
@@ -207,14 +209,20 @@ keeps the source DRY while working within the language today.
 
 ## 9. Roadmap
 
-Implemented in v0.1: lexer, parser, renderer, expressions with filters and
-operators, `if`/`for`/`set`/`verbatim`, `loop` variables, auto-escaping,
-the built-in filter set, and a test suite.
+Implemented: lexer, parser, renderer, expressions with filters and operators,
+`if`/`for`/`set`/`verbatim`, `loop` variables, auto-escaping, the built-in
+filter set, `{% include %}`, single-level `{% extends %}` / `{% block %}`, and a
+test suite.
+
+Template inheritance is threaded through the overlay scope: a child that
+`extends` a parent binds each of its `{% block %}` bodies as a scope binding
+named `"__scblock__<name>"`; when the parent renders a `{% block %}` it renders
+the child's override if one is bound, else its own default body. Includes read
+and render another file against the current context and scope.
 
 Planned next:
 
-* **Template inheritance:** `{% extends %}`, `{% block %}` / `{% endblock %}`.
-* **Includes:** `{% include "partial" %}` with a shared context.
+* **Multi-level inheritance** (a base that itself extends a grandparent).
 * **Macros:** `{% macro %}` / `{% import %}`.
 * **`for key, value in map`** once WFL exposes map-key iteration.
 * **Whitespace control** (`{{-` / `-}}`).
