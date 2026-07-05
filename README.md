@@ -1,2 +1,2 @@
-# Scribe-
+# Scribe
 Templating engine 
