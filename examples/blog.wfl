@@ -1,0 +1,52 @@
+// Scribe example — rendering a small blog page.
+//
+// Run it with the bundler (the engine must be concatenated first):
+//     build/bundle.sh examples/blog.wfl build/blog.run.wfl
+//     wfl build/blog.run.wfl
+// or simply:  examples/run.sh examples/blog.wfl
+
+// --- build the context (plain maps + lists, JSON-shaped) -------------------
+
+create map author:
+    "name" is "Ada Lovelace"
+    "handle" is "ada"
+end map
+
+store post_tags as ["history", "computing", "math"]
+
+create map post:
+    "title" is "On <Analytical> Engines & Notes"
+    "author" is author
+    "tags" is post_tags
+    "published" is yes
+    "body" is "The engine <weaves> algebraic patterns."
+end map
+
+create map page:
+    "site" is "Scribe Weekly"
+    "post" is post
+    "comments" is ["Brilliant!", "Ahead of her time."]
+end map
+
+// --- the template -----------------------------------------------------------
+// {{ ... }} is auto-escaped; use | raw to emit trusted HTML.
+
+store template as "<article>
+  <h1>{{ post.title }}</h1>
+  <p class=\"byline\">by {{ post.author.name }} (@{{ post.author.handle }})</p>
+
+  {% if post.published %}<p>{{ post.body }}</p>{% else %}<p><em>draft</em></p>{% endif %}
+
+  <ul class=\"tags\">
+  {% for tag in post.tags %}<li>{{ loop.index }}. {{ tag | upper }}</li>
+  {% endfor %}</ul>
+
+  <h2>{{ comments | length }} comments</h2>
+  {% for c in comments %}<blockquote>{{ c }}</blockquote>
+  {% else %}<p>No comments yet.</p>
+  {% endfor %}
+  <footer>{{ site }}</footer>
+</article>"
+
+store html as scribe_render of template and page
+display html

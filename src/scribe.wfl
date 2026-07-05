@@ -1,0 +1,1243 @@
+// ============================================================================
+// Scribe — a Twig-inspired templating engine written in WFL.
+//
+// This file is the entire engine. It defines only actions (no top-level side
+// effects) so it can be bundled with a caller script (see build/bundle.sh).
+//
+// Pipeline:  template text -> scribe_lex -> scribe_parse -> scribe_render_nodes
+// Public:    scribe_render of template and context
+//            scribe_render_file of path and context
+//
+// See docs/DESIGN.md for the full architecture and the WFL constraints that
+// shaped it.
+// ============================================================================
+
+
+// ----------------------------------------------------------------------------
+// Section 1 — small string / value helpers
+// ----------------------------------------------------------------------------
+
+// Find `needle` in `haystack` at or after `from_idx`. Returns the absolute index
+// or -1 when not found. (WFL's indexof always searches from 0, so we slice.)
+define action called scribe_index_from with parameters sc_haystack and sc_needle and sc_from_idx:
+    store hlen as length of sc_haystack
+    check if sc_from_idx is greater than or equal to hlen:
+        return 0 minus 1
+    end check
+    store rest as substring of sc_haystack and sc_from_idx and (hlen minus sc_from_idx)
+    store rel as indexof of rest and sc_needle
+    check if rel is less than 0:
+        return 0 minus 1
+    end check
+    return sc_from_idx plus rel
+end action
+
+// Does `haystack` contain `needle`? Returns a real boolean.
+define action called scribe_contains with parameters sc_haystack and sc_needle:
+    store sc_pos as indexof of sc_haystack and sc_needle
+    check if sc_pos is less than 0:
+        return no
+    end check
+    return yes
+end action
+
+// Replace every occurrence of `needle` in `s` with `replacement`.
+// Hand-written because WFL reserves `replace` for its pattern engine.
+define action called scribe_replace_all with parameters sc_s and sc_needle and replacement:
+    store nlen as length of sc_needle
+    check if nlen is equal to 0:
+        return sc_s
+    end check
+    store out as ""
+    store idx as 0
+    store slen as length of sc_s
+    repeat while idx is less than slen:
+        store hit as scribe_index_from of sc_s and sc_needle and idx
+        check if hit is less than 0:
+            change out to out with (substring of sc_s and idx and (slen minus idx))
+            change idx to slen
+        otherwise:
+            change out to out with (substring of sc_s and idx and (hit minus idx))
+            change out to out with replacement
+            change idx to hit plus nlen
+        end check
+    end repeat
+    return out
+end action
+
+// HTML-escape a piece of text so it is safe to place in element content or a
+// double/single-quoted attribute. Upholds WFL Principle 8 (secure by default).
+define action called scribe_escape with parameters sc_raw_text:
+    store sc_s as sc_raw_text
+    // Ampersand first so we don't double-escape the entities we introduce.
+    change sc_s to scribe_replace_all of sc_s and "&" and "&amp;"
+    change sc_s to scribe_replace_all of sc_s and "<" and "&lt;"
+    change sc_s to scribe_replace_all of sc_s and ">" and "&gt;"
+    change sc_s to scribe_replace_all of sc_s and "\"" and "&quot;"
+    change sc_s to scribe_replace_all of sc_s and "'" and "&#39;"
+    return sc_s
+end action
+
+// Convert any WFL value to display text (numbers, booleans, nothing, text).
+define action called scribe_to_text with parameters sc_v:
+    check if sc_v is nothing:
+        return ""
+    end check
+    return "" with sc_v
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 2 — lexer: template text -> flat list of tokens
+//
+// A token is a map { "kind": <text|output|tag>, "body": <string> }.
+// Comments ({# ... #}) are consumed and never emitted.
+// ----------------------------------------------------------------------------
+
+define action called scribe_text_token with parameters sc_body:
+    create map m:
+        "kind" is "text"
+        "body" is sc_body
+    end map
+    return m
+end action
+
+define action called scribe_out_token with parameters sc_body:
+    create map m:
+        "kind" is "output"
+        "body" is sc_body
+    end map
+    return m
+end action
+
+define action called scribe_tag_token with parameters sc_body:
+    create map m:
+        "kind" is "tag"
+        "body" is sc_body
+    end map
+    return m
+end action
+
+define action called scribe_lex with parameters sc_tpl:
+    create list sc_toks:
+    end list
+    store nlen as length of sc_tpl
+    store idx as 0
+    store buf as ""
+    repeat while idx is less than nlen:
+        store two_ch as substring of sc_tpl and idx and 2
+        check if two_ch is "{{":
+            check if (length of buf) is greater than 0:
+                store sc_tk as scribe_text_token of buf
+                push with sc_toks and sc_tk
+                change buf to ""
+            end check
+            store close_idx as scribe_index_from of sc_tpl and "}}" and (idx plus 2)
+            check if close_idx is less than 0:
+                store etok as scribe_text_token of "[Scribe error: unclosed '{{']"
+                push with sc_toks and etok
+                change idx to nlen
+            otherwise:
+                store body_v as substring of sc_tpl and (idx plus 2) and (close_idx minus (idx plus 2))
+                store tk2 as scribe_out_token of (trim of body_v)
+                push with sc_toks and tk2
+                change idx to close_idx plus 2
+            end check
+        otherwise:
+            check if two_ch is "{%":
+                check if (length of buf) is greater than 0:
+                    store tk3 as scribe_text_token of buf
+                    push with sc_toks and tk3
+                    change buf to ""
+                end check
+                store close_tag as scribe_index_from of sc_tpl and "%}" and (idx plus 2)
+                check if close_tag is less than 0:
+                    store etok2 as scribe_text_token of "[Scribe error: unclosed '{%']"
+                    push with sc_toks and etok2
+                    change idx to nlen
+                otherwise:
+                    store body_t as trim of (substring of sc_tpl and (idx plus 2) and (close_tag minus (idx plus 2)))
+                    check if body_t is "verbatim":
+                        store vstart as close_tag plus 2
+                        store vscan as vstart
+                        store vend as 0 minus 1
+                        store vafter as 0 minus 1
+                        repeat while vscan is less than nlen:
+                            store vtag as scribe_index_from of sc_tpl and "{%" and vscan
+                            check if vtag is less than 0:
+                                break
+                            end check
+                            store vclose as scribe_index_from of sc_tpl and "%}" and (vtag plus 2)
+                            check if vclose is less than 0:
+                                break
+                            end check
+                            store vbody as trim of (substring of sc_tpl and (vtag plus 2) and (vclose minus (vtag plus 2)))
+                            check if vbody is "endverbatim":
+                                change vend to vtag
+                                change vafter to vclose plus 2
+                                break
+                            end check
+                            change vscan to vclose plus 2
+                        end repeat
+                        check if vend is less than 0:
+                            change vend to nlen
+                            change vafter to nlen
+                        end check
+                        store vraw as substring of sc_tpl and vstart and (vend minus vstart)
+                        store vtok as scribe_text_token of vraw
+                        push with sc_toks and vtok
+                        change idx to vafter
+                    otherwise:
+                        store tk4 as scribe_tag_token of body_t
+                        push with sc_toks and tk4
+                        change idx to close_tag plus 2
+                    end check
+                end check
+            otherwise:
+                check if two_ch is "{#":
+                    store close_cmt as scribe_index_from of sc_tpl and "#}" and (idx plus 2)
+                    check if close_cmt is less than 0:
+                        change idx to nlen
+                    otherwise:
+                        change idx to close_cmt plus 2
+                    end check
+                otherwise:
+                    change buf to buf with (substring of sc_tpl and idx and 1)
+                    change idx to idx plus 1
+                end check
+            end check
+        end check
+    end repeat
+    check if (length of buf) is greater than 0:
+        store tk5 as scribe_text_token of buf
+        push with sc_toks and tk5
+    end check
+    return sc_toks
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 3 — expression engine
+//
+// Expressions appear inside {{ ... }} and in if/elseif/for/set tags. They are
+// tokenized and evaluated in a single recursive-descent pass against the
+// context map and the overlay scope. Precedence (loosest to tightest):
+//     or > and > not > comparison > + - ~ > * / > unary- > filter | > primary
+// ----------------------------------------------------------------------------
+
+// --- character classes (built from lookup strings, no char-class stdlib needed)
+
+define action called scribe_is_digit with parameters sc_ch:
+    store sc_pos as indexof of "0123456789" and sc_ch
+    check if sc_pos is less than 0:
+        return no
+    end check
+    check if (length of sc_ch) is equal to 0:
+        return no
+    end check
+    return yes
+end action
+
+define action called scribe_is_alpha with parameters sc_ch:
+    check if (length of sc_ch) is equal to 0:
+        return no
+    end check
+    store sc_pos as indexof of "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_" and sc_ch
+    check if sc_pos is less than 0:
+        return no
+    end check
+    return yes
+end action
+
+define action called scribe_is_alnum with parameters sc_ch:
+    check if scribe_is_alpha of sc_ch:
+        return yes
+    end check
+    return scribe_is_digit of sc_ch
+end action
+
+define action called scribe_is_space with parameters sc_ch:
+    check if sc_ch is " ":
+        return yes
+    end check
+    check if sc_ch is "\t":
+        return yes
+    end check
+    check if sc_ch is "\n":
+        return yes
+    end check
+    check if sc_ch is "\r":
+        return yes
+    end check
+    return no
+end action
+
+// --- numeric parsing (no string->number native exists in WFL)
+
+// Parse a run of digits into a non-negative integer, or nothing if not all
+// characters are digits.
+define action called scribe_parse_int with parameters sc_s:
+    store n as length of sc_s
+    check if n is equal to 0:
+        return nothing
+    end check
+    store acc as 0
+    store sc_i as 0
+    repeat while sc_i is less than n:
+        store sc_ch as substring of sc_s and sc_i and 1
+        store dv as indexof of "0123456789" and sc_ch
+        check if dv is less than 0:
+            return nothing
+        end check
+        change acc to (acc times 10) plus dv
+        change sc_i to sc_i plus 1
+    end repeat
+    return acc
+end action
+
+// Parse a numeric literal, optionally with one decimal point.
+define action called scribe_str_to_num with parameters sc_s:
+    store dot as indexof of sc_s and "."
+    check if dot is less than 0:
+        store whole as scribe_parse_int of sc_s
+        check if whole is nothing:
+            return 0
+        end check
+        return whole
+    end check
+    store int_part as substring of sc_s and 0 and dot
+    store frac_len as (length of sc_s) minus (dot plus 1)
+    store frac_part as substring of sc_s and (dot plus 1) and frac_len
+    store int_val as scribe_parse_int of int_part
+    store frac_val as scribe_parse_int of frac_part
+    check if int_val is nothing:
+        change int_val to 0
+    end check
+    check if frac_val is nothing:
+        return int_val
+    end check
+    store denom as power of 10 and frac_len
+    return int_val plus (frac_val divided by denom)
+end action
+
+// --- expression tokenizer
+
+define action called scribe_mk_tok with parameters sc_t and sc_v:
+    create map m:
+        "t" is sc_t
+        "v" is sc_v
+    end map
+    return m
+end action
+
+define action called scribe_expr_tokenize with parameters sc_src:
+    create list sc_toks:
+    end list
+    store n as length of sc_src
+    store sc_i as 0
+    store j as 0
+    store cj as ""
+    repeat while sc_i is less than n:
+        store sc_ch as substring of sc_src and sc_i and 1
+        check if scribe_is_space of sc_ch:
+            change sc_i to sc_i plus 1
+        otherwise:
+            check if scribe_is_digit of sc_ch:
+                change j to sc_i
+                repeat while j is less than n:
+                    change cj to substring of sc_src and j and 1
+                    check if (scribe_is_digit of cj) or (cj is "."):
+                        change j to j plus 1
+                    otherwise:
+                        break
+                    end check
+                end repeat
+                store numstr as substring of sc_src and sc_i and (j minus sc_i)
+                store nt as scribe_mk_tok of "num" and numstr
+                push with sc_toks and nt
+                change sc_i to j
+            otherwise:
+                check if scribe_is_alpha of sc_ch:
+                    change j to sc_i
+                    repeat while j is less than n:
+                        change cj to substring of sc_src and j and 1
+                        check if scribe_is_alnum of cj:
+                            change j to j plus 1
+                        otherwise:
+                            break
+                        end check
+                    end repeat
+                    store namestr as substring of sc_src and sc_i and (j minus sc_i)
+                    store nmt as scribe_mk_tok of "name" and namestr
+                    push with sc_toks and nmt
+                    change sc_i to j
+                otherwise:
+                    check if (sc_ch is "\"") or (sc_ch is "'"):
+                        store quote as sc_ch
+                        change j to sc_i plus 1
+                        store strval as ""
+                        repeat while j is less than n:
+                            change cj to substring of sc_src and j and 1
+                            check if cj is quote:
+                                break
+                            end check
+                            change strval to strval with cj
+                            change j to j plus 1
+                        end repeat
+                        store st as scribe_mk_tok of "str" and strval
+                        push with sc_toks and st
+                        change sc_i to j plus 1
+                    otherwise:
+                        store two as substring of sc_src and sc_i and 2
+                        check if (two is "==") or (two is "!=") or (two is "<=") or (two is ">="):
+                            store ot as scribe_mk_tok of "op" and two
+                            push with sc_toks and ot
+                            change sc_i to sc_i plus 2
+                        otherwise:
+                            store o1 as scribe_mk_tok of "op" and sc_ch
+                            push with sc_toks and o1
+                            change sc_i to sc_i plus 1
+                        end check
+                    end check
+                end check
+            end check
+        end check
+    end repeat
+    store endtok as scribe_mk_tok of "end" and ""
+    push with sc_toks and endtok
+    return sc_toks
+end action
+
+// --- token predicates
+
+define action called scribe_is_op with parameters sc_tk and sc_sym:
+    check if sc_tk["t"] is "op":
+        check if sc_tk["v"] is sc_sym:
+            return yes
+        end check
+    end check
+    return no
+end action
+
+define action called scribe_is_name with parameters sc_tk and sc_word:
+    check if sc_tk["t"] is "name":
+        check if sc_tk["v"] is sc_word:
+            return yes
+        end check
+    end check
+    return no
+end action
+
+// --- variable lookup (overlay scope first, then context map)
+
+define action called scribe_lookup with parameters sc_name and sc_ctx and sc_scope:
+    store sc_i as (length of sc_scope) minus 1
+    repeat while sc_i is greater than or equal to 0:
+        store sc_b as sc_scope[sc_i]
+        check if sc_b["name"] is sc_name:
+            return sc_b["value"]
+        end check
+        change sc_i to sc_i minus 1
+    end repeat
+    check if (typeof of sc_ctx) is "Object":
+        check if sc_ctx contains sc_name:
+            return sc_ctx[sc_name]
+        end check
+    end check
+    return nothing
+end action
+
+// Read a member (map key or list index) from a value; nothing if absent.
+define action called scribe_get_member with parameters sc_obj and sc_key:
+    store sc_t as typeof of sc_obj
+    check if sc_t is "Object":
+        check if sc_obj contains sc_key:
+            return sc_obj[sc_key]
+        end check
+        return nothing
+    end check
+    check if sc_t is "List":
+        store idx as scribe_parse_int of sc_key
+        check if idx is nothing:
+            return nothing
+        end check
+        check if idx is less than 0:
+            return nothing
+        end check
+        check if idx is greater than or equal to (length of sc_obj):
+            return nothing
+        end check
+        return sc_obj[idx]
+    end check
+    return nothing
+end action
+
+// --- truthiness (Scribe's own rule; WFL rejects non-boolean conditions)
+
+define action called scribe_truthy with parameters sc_v:
+    check if sc_v is nothing:
+        return no
+    end check
+    store sc_t as typeof of sc_v
+    check if sc_t is "Boolean":
+        return sc_v
+    end check
+    check if sc_t is "Number":
+        check if sc_v is equal to 0:
+            return no
+        end check
+        return yes
+    end check
+    check if sc_t is "Text":
+        check if (length of sc_v) is equal to 0:
+            return no
+        end check
+        return yes
+    end check
+    check if sc_t is "List":
+        check if (length of sc_v) is equal to 0:
+            return no
+        end check
+        return yes
+    end check
+    return yes
+end action
+
+define action called scribe_negate with parameters sc_b:
+    check if sc_b:
+        return no
+    end check
+    return yes
+end action
+
+define action called scribe_equals with parameters sc_a and sc_b:
+    store ta as typeof of sc_a
+    store tb as typeof of sc_b
+    check if ta is tb:
+        check if sc_a is sc_b:
+            return yes
+        end check
+        return no
+    end check
+    check if (scribe_to_text of sc_a) is (scribe_to_text of sc_b):
+        return yes
+    end check
+    return no
+end action
+
+
+// --- filters
+
+define action called scribe_raw_marker with parameters sc_txt:
+    create map m:
+        "__scribe_safe__" is sc_txt
+    end map
+    return m
+end action
+
+define action called scribe_is_safe with parameters sc_v:
+    check if (typeof of sc_v) is "Object":
+        check if sc_v contains "__scribe_safe__":
+            return yes
+        end check
+    end check
+    return no
+end action
+
+// Title-case: capitalize the first letter of each space-separated word.
+define action called scribe_title with parameters sc_s:
+    store words as split sc_s by " "
+    store out as ""
+    store first_word as yes
+    for each w in words:
+        check if first_word:
+            change out to capitalize of w
+            change first_word to no
+        otherwise:
+            change out to out with " " with (capitalize of w)
+        end check
+    end for
+    return out
+end action
+
+define action called scribe_reverse_list with parameters sc_lst:
+    create list out:
+    end list
+    store sc_i as (length of sc_lst) minus 1
+    repeat while sc_i is greater than or equal to 0:
+        push with out and (sc_lst[sc_i])
+        change sc_i to sc_i minus 1
+    end repeat
+    return out
+end action
+
+// Apply a named filter to a value. `args` is a list of already-evaluated args.
+define action called scribe_apply_filter with parameters sc_fname and sc_val and sc_filter_args:
+    store argc as length of sc_filter_args
+    check if sc_fname is "upper":
+        return touppercase of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "lower":
+        return tolowercase of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "capitalize":
+        return capitalize of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "title":
+        return scribe_title of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "trim":
+        return trim of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "length":
+        store vt as typeof of sc_val
+        check if vt is "List":
+            return length of sc_val
+        end check
+        check if vt is "Text":
+            return length of sc_val
+        end check
+        return 0
+    end check
+    check if sc_fname is "reverse":
+        check if (typeof of sc_val) is "List":
+            return scribe_reverse_list of sc_val
+        end check
+        return reverse of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "first":
+        check if (typeof of sc_val) is "List":
+            check if (length of sc_val) is greater than 0:
+                return sc_val[0]
+            end check
+            return nothing
+        end check
+        return substring of (scribe_to_text of sc_val) and 0 and 1
+    end check
+    check if sc_fname is "last":
+        check if (typeof of sc_val) is "List":
+            check if (length of sc_val) is greater than 0:
+                return sc_val[(length of sc_val) minus 1]
+            end check
+            return nothing
+        end check
+        store sc_s as scribe_to_text of sc_val
+        return substring of sc_s and ((length of sc_s) minus 1) and 1
+    end check
+    check if sc_fname is "join":
+        store sep as ""
+        check if argc is greater than 0:
+            change sep to scribe_to_text of (sc_filter_args[0])
+        end check
+        check if (typeof of sc_val) is "List":
+            return join of sc_val and sep
+        end check
+        return scribe_to_text of sc_val
+    end check
+    check if sc_fname is "default":
+        check if scribe_truthy of sc_val:
+            return sc_val
+        end check
+        check if argc is greater than 0:
+            return sc_filter_args[0]
+        end check
+        return ""
+    end check
+    check if sc_fname is "replace":
+        check if argc is greater than or equal to 2:
+            return scribe_replace_all of (scribe_to_text of sc_val) and (scribe_to_text of (sc_filter_args[0])) and (scribe_to_text of (sc_filter_args[1]))
+        end check
+        return scribe_to_text of sc_val
+    end check
+    check if sc_fname is "abs":
+        return abs of sc_val
+    end check
+    check if sc_fname is "round":
+        return round of sc_val
+    end check
+    check if sc_fname is "raw":
+        return scribe_raw_marker of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "escape":
+        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val))
+    end check
+    check if sc_fname is "e":
+        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val))
+    end check
+    return "[Scribe error: unknown filter '" with sc_fname with "']"
+end action
+
+// --- recursive-descent evaluator: each level returns { "val", "pos" }
+
+define action called scribe_res with parameters sc_v and p:
+    create map m:
+        "val" is sc_v
+        "pos" is p
+    end map
+    return m
+end action
+
+define action called scribe_p_primary with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store sc_tk as sc_toks[sc_pos]
+    store tt as sc_tk["t"]
+    store tv as sc_tk["v"]
+    store np as sc_pos plus 1
+    check if tt is "num":
+        return scribe_res of (scribe_str_to_num of tv) and (sc_pos plus 1)
+    end check
+    check if tt is "str":
+        return scribe_res of tv and (sc_pos plus 1)
+    end check
+    check if scribe_is_op of sc_tk and "(":
+        store inner as scribe_p_or of sc_toks and (sc_pos plus 1) and sc_ctx and sc_scope
+        change np to inner["pos"]
+        return scribe_res of (inner["val"]) and (np plus 1)
+    end check
+    check if tt is "name":
+        check if tv is "true":
+            return scribe_res of yes and (sc_pos plus 1)
+        end check
+        check if tv is "false":
+            return scribe_res of no and (sc_pos plus 1)
+        end check
+        check if tv is "null":
+            return scribe_res of nothing and (sc_pos plus 1)
+        end check
+        check if tv is "none":
+            return scribe_res of nothing and (sc_pos plus 1)
+        end check
+        store curval as scribe_lookup of tv and sc_ctx and sc_scope
+        change np to sc_pos plus 1
+        repeat while scribe_is_op of (sc_toks[np]) and ".":
+            store seg as sc_toks[np plus 1]
+            change curval to scribe_get_member of curval and (seg["v"])
+            change np to np plus 2
+        end repeat
+        return scribe_res of curval and np
+    end check
+    return scribe_res of nothing and (sc_pos plus 1)
+end action
+
+define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store base as scribe_p_primary of sc_toks and sc_pos and sc_ctx and sc_scope
+    store curval as base["val"]
+    store np as base["pos"]
+    store fargs as []
+    repeat while scribe_is_op of (sc_toks[np]) and "|":
+        store fname_tok as sc_toks[np plus 1]
+        store sc_fname as fname_tok["v"]
+        change np to np plus 2
+        change fargs to []
+        check if scribe_is_op of (sc_toks[np]) and "(":
+            change np to np plus 1
+            repeat while scribe_negate of (scribe_is_op of (sc_toks[np]) and ")"):
+                store ares as scribe_p_or of sc_toks and np and sc_ctx and sc_scope
+                push with fargs and (ares["val"])
+                change np to ares["pos"]
+                check if scribe_is_op of (sc_toks[np]) and ",":
+                    change np to np plus 1
+                end check
+            end repeat
+            change np to np plus 1
+        end check
+        change curval to scribe_apply_filter of sc_fname and curval and fargs
+    end repeat
+    return scribe_res of curval and np
+end action
+
+define action called scribe_p_unary with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    check if scribe_is_op of (sc_toks[sc_pos]) and "-":
+        store r as scribe_p_unary of sc_toks and (sc_pos plus 1) and sc_ctx and sc_scope
+        return scribe_res of (0 minus (r["val"])) and (r["pos"])
+    end check
+    return scribe_p_filter of sc_toks and sc_pos and sc_ctx and sc_scope
+end action
+
+define action called scribe_p_mul with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store left as scribe_p_unary of sc_toks and sc_pos and sc_ctx and sc_scope
+    store lv as left["val"]
+    store np as left["pos"]
+    repeat while (scribe_is_op of (sc_toks[np]) and "*") or (scribe_is_op of (sc_toks[np]) and "/"):
+        store optok as sc_toks[np]
+        store right as scribe_p_unary of sc_toks and (np plus 1) and sc_ctx and sc_scope
+        check if (optok["v"]) is "*":
+            change lv to lv times (right["val"])
+        otherwise:
+            change lv to lv divided by (right["val"])
+        end check
+        change np to right["pos"]
+    end repeat
+    return scribe_res of lv and np
+end action
+
+define action called scribe_p_add with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store left as scribe_p_mul of sc_toks and sc_pos and sc_ctx and sc_scope
+    store lv as left["val"]
+    store np as left["pos"]
+    repeat while (scribe_is_op of (sc_toks[np]) and "+") or (scribe_is_op of (sc_toks[np]) and "-") or (scribe_is_op of (sc_toks[np]) and "~"):
+        store optok as sc_toks[np]
+        store right as scribe_p_mul of sc_toks and (np plus 1) and sc_ctx and sc_scope
+        store rv as right["val"]
+        check if (optok["v"]) is "+":
+            change lv to lv plus rv
+        otherwise:
+            check if (optok["v"]) is "-":
+                change lv to lv minus rv
+            otherwise:
+                change lv to (scribe_to_text of lv) with (scribe_to_text of rv)
+            end check
+        end check
+        change np to right["pos"]
+    end repeat
+    return scribe_res of lv and np
+end action
+
+define action called scribe_p_cmp with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store left as scribe_p_add of sc_toks and sc_pos and sc_ctx and sc_scope
+    store lv as left["val"]
+    store np as left["pos"]
+    store optok as sc_toks[np]
+    check if optok["t"] is "op":
+        store op as optok["v"]
+        check if (op is "==") or (op is "!=") or (op is "<") or (op is ">") or (op is "<=") or (op is ">="):
+            store right as scribe_p_add of sc_toks and (np plus 1) and sc_ctx and sc_scope
+            store rv as right["val"]
+            store result as no
+            check if op is "==":
+                change result to scribe_equals of lv and rv
+            otherwise:
+                check if op is "!=":
+                    change result to scribe_negate of (scribe_equals of lv and rv)
+                otherwise:
+                    check if op is "<":
+                        check if lv is less than rv:
+                            change result to yes
+                        end check
+                    otherwise:
+                        check if op is ">":
+                            check if lv is greater than rv:
+                                change result to yes
+                            end check
+                        otherwise:
+                            check if op is "<=":
+                                check if lv is less than or equal to rv:
+                                    change result to yes
+                                end check
+                            otherwise:
+                                check if lv is greater than or equal to rv:
+                                    change result to yes
+                                end check
+                            end check
+                        end check
+                    end check
+                end check
+            end check
+            return scribe_res of result and (right["pos"])
+        end check
+    end check
+    return scribe_res of lv and np
+end action
+
+define action called scribe_p_not with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    check if scribe_is_name of (sc_toks[sc_pos]) and "not":
+        store r as scribe_p_cmp of sc_toks and (sc_pos plus 1) and sc_ctx and sc_scope
+        return scribe_res of (scribe_negate of (scribe_truthy of (r["val"]))) and (r["pos"])
+    end check
+    return scribe_p_cmp of sc_toks and sc_pos and sc_ctx and sc_scope
+end action
+
+define action called scribe_p_and with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store left as scribe_p_not of sc_toks and sc_pos and sc_ctx and sc_scope
+    store lv as left["val"]
+    store np as left["pos"]
+    repeat while scribe_is_name of (sc_toks[np]) and "and":
+        store right as scribe_p_not of sc_toks and (np plus 1) and sc_ctx and sc_scope
+        change lv to (scribe_truthy of lv) and (scribe_truthy of (right["val"]))
+        change np to right["pos"]
+    end repeat
+    return scribe_res of lv and np
+end action
+
+define action called scribe_p_or with parameters sc_toks and sc_pos and sc_ctx and sc_scope:
+    store left as scribe_p_and of sc_toks and sc_pos and sc_ctx and sc_scope
+    store lv as left["val"]
+    store np as left["pos"]
+    repeat while scribe_is_name of (sc_toks[np]) and "or":
+        store right as scribe_p_and of sc_toks and (np plus 1) and sc_ctx and sc_scope
+        change lv to (scribe_truthy of lv) or (scribe_truthy of (right["val"]))
+        change np to right["pos"]
+    end repeat
+    return scribe_res of lv and np
+end action
+
+// Evaluate an expression string to a WFL value.
+define action called scribe_eval_expr with parameters sc_src and sc_ctx and sc_scope:
+    store sc_toks as scribe_expr_tokenize of sc_src
+    store r as scribe_p_or of sc_toks and 0 and sc_ctx and sc_scope
+    return r["val"]
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 4 — parser and renderer
+//
+// The parser turns the flat token list into a tree of nodes. Block tags
+// (if / for) recurse: their bodies are node lists. The renderer walks the tree
+// against the context map and the overlay scope, producing the output string.
+//
+// Node shapes (all maps):
+//   { "kind": "text",   "body": <text> }
+//   { "kind": "output", "expr": <src> }
+//   { "kind": "set",    "name": <var>, "expr": <src> }
+//   { "kind": "if",     "branches": [ {"cond": <src>, "body": [nodes]} ], "else_body": [nodes] }
+//   { "kind": "for",    "var": <name>, "list_expr": <src>, "body": [nodes], "else_body": [nodes] }
+// ----------------------------------------------------------------------------
+
+// --- node + helper constructors
+
+define action called scribe_text_node with parameters sc_body:
+    create map m:
+        "kind" is "text"
+        "body" is sc_body
+    end map
+    return m
+end action
+
+define action called scribe_output_node with parameters sc_expr:
+    create map m:
+        "kind" is "output"
+        "expr" is sc_expr
+    end map
+    return m
+end action
+
+define action called scribe_set_node with parameters sc_name and sc_expr:
+    create map m:
+        "kind" is "set"
+        "name" is sc_name
+        "expr" is sc_expr
+    end map
+    return m
+end action
+
+define action called scribe_mk_branch with parameters sc_cond and sc_body:
+    create map m:
+        "cond" is sc_cond
+        "body" is sc_body
+    end map
+    return m
+end action
+
+define action called scribe_binding with parameters sc_name and sc_value:
+    create map m:
+        "name" is sc_name
+        "value" is sc_value
+    end map
+    return m
+end action
+
+define action called scribe_make_loop with parameters sc_i and sc_total:
+    store is_first as no
+    check if sc_i is equal to 0:
+        change is_first to yes
+    end check
+    store is_last as no
+    check if sc_i is equal to (sc_total minus 1):
+        change is_last to yes
+    end check
+    create map m:
+        "index" is (sc_i plus 1)
+        "index0" is sc_i
+        "first" is is_first
+        "last" is is_last
+        "length" is sc_total
+    end map
+    return m
+end action
+
+// --- small string helpers for tag parsing
+
+define action called scribe_first_word with parameters sc_src:
+    store sp as indexof of sc_src and " "
+    check if sp is less than 0:
+        return sc_src
+    end check
+    return substring of sc_src and 0 and sp
+end action
+
+define action called scribe_after_word with parameters sc_src and sc_word:
+    store wl as length of sc_word
+    store rest_len as (length of sc_src) minus wl
+    check if rest_len is less than or equal to 0:
+        return ""
+    end check
+    return trim of (substring of sc_src and wl and rest_len)
+end action
+
+define action called scribe_list_contains with parameters sc_lst and sc_item:
+    for each x in sc_lst:
+        check if x is sc_item:
+            return yes
+        end check
+    end for
+    return no
+end action
+
+// --- parser: a sequence of nodes until a stopmark-tag (or end of tokens)
+// Returns { "nodes": [..], "pos": <int>, "stopmark": <stopword or ""> }.
+
+define action called scribe_parse_result with parameters sc_nodes and sc_pos and sc_stopmark:
+    create map m:
+        "nodes" is sc_nodes
+        "pos" is sc_pos
+        "stopmark" is sc_stopmark
+    end map
+    return m
+end action
+
+define action called scribe_parse_seq with parameters sc_toks and sc_pos and sc_stops:
+    store sc_nodes as []
+    store p as sc_pos
+    store stopword as ""
+    store ntoks as length of sc_toks
+    repeat while p is less than ntoks:
+        store tkn as sc_toks[p]
+        store knd as tkn["kind"]
+        check if knd is "text":
+            push with sc_nodes and (scribe_text_node of (tkn["body"]))
+            change p to p plus 1
+        otherwise:
+            check if knd is "output":
+                push with sc_nodes and (scribe_output_node of (tkn["body"]))
+                change p to p plus 1
+            otherwise:
+                store sc_tagsrc as tkn["body"]
+                store firstword as scribe_first_word of sc_tagsrc
+                check if scribe_list_contains of sc_stops and firstword:
+                    change stopword to firstword
+                    break
+                otherwise:
+                    check if firstword is "if":
+                        store res_if as scribe_parse_if of sc_toks and (p plus 1) and sc_tagsrc
+                        push with sc_nodes and (res_if["node"])
+                        change p to res_if["pos"]
+                    otherwise:
+                        check if firstword is "for":
+                            store res_for as scribe_parse_for of sc_toks and (p plus 1) and sc_tagsrc
+                            push with sc_nodes and (res_for["node"])
+                            change p to res_for["pos"]
+                        otherwise:
+                            check if firstword is "set":
+                                push with sc_nodes and (scribe_parse_set of sc_tagsrc)
+                                change p to p plus 1
+                            otherwise:
+                                push with sc_nodes and (scribe_text_node of ("[Scribe error: unknown tag '" with firstword with "']"))
+                                change p to p plus 1
+                            end check
+                        end check
+                    end check
+                end check
+            end check
+        end check
+    end repeat
+    return scribe_parse_result of sc_nodes and p and stopword
+end action
+
+// if / elseif / else / endif
+define action called scribe_parse_if with parameters sc_toks and sc_pos and sc_tagsrc:
+    store branches as []
+    store else_body as []
+    store sc_cond as scribe_after_word of sc_tagsrc and "if"
+    store if_stops as ["elseif", "else", "endif"]
+    store seq as scribe_parse_seq of sc_toks and sc_pos and if_stops
+    push with branches and (scribe_mk_branch of sc_cond and (seq["nodes"]))
+    store p as seq["pos"]
+    store sc_stopmark as seq["stopmark"]
+    repeat while sc_stopmark is "elseif":
+        store etag as sc_toks[p]
+        store econd as scribe_after_word of (etag["body"]) and "elseif"
+        change p to p plus 1
+        store eseq as scribe_parse_seq of sc_toks and p and if_stops
+        push with branches and (scribe_mk_branch of econd and (eseq["nodes"]))
+        change p to eseq["pos"]
+        change sc_stopmark to eseq["stopmark"]
+    end repeat
+    check if sc_stopmark is "else":
+        change p to p plus 1
+        store lseq as scribe_parse_seq of sc_toks and p and ["endif"]
+        change else_body to lseq["nodes"]
+        change p to lseq["pos"]
+        change sc_stopmark to lseq["stopmark"]
+    end check
+    check if sc_stopmark is "endif":
+        change p to p plus 1
+    end check
+    create map sc_node:
+        "kind" is "if"
+        "branches" is branches
+        "else_body" is else_body
+    end map
+    create map result:
+        "node" is sc_node
+        "pos" is p
+    end map
+    return result
+end action
+
+// for VAR in EXPR ... [else] ... endfor
+define action called scribe_parse_for with parameters sc_toks and sc_pos and sc_tagsrc:
+    store after as scribe_after_word of sc_tagsrc and "for"
+    store in_pos as indexof of after and " in "
+    store var_name as ""
+    store list_expr as ""
+    check if in_pos is less than 0:
+        change var_name to after
+    otherwise:
+        change var_name to trim of (substring of after and 0 and in_pos)
+        store tail_start as in_pos plus 4
+        change list_expr to trim of (substring of after and tail_start and ((length of after) minus tail_start))
+    end check
+    store for_stops as ["else", "endfor"]
+    store seq as scribe_parse_seq of sc_toks and sc_pos and for_stops
+    store sc_body as seq["nodes"]
+    store else_body as []
+    store p as seq["pos"]
+    store sc_stopmark as seq["stopmark"]
+    check if sc_stopmark is "else":
+        change p to p plus 1
+        store lseq as scribe_parse_seq of sc_toks and p and ["endfor"]
+        change else_body to lseq["nodes"]
+        change p to lseq["pos"]
+        change sc_stopmark to lseq["stopmark"]
+    end check
+    check if sc_stopmark is "endfor":
+        change p to p plus 1
+    end check
+    create map sc_node:
+        "kind" is "for"
+        "var" is var_name
+        "list_expr" is list_expr
+        "body" is sc_body
+        "else_body" is else_body
+    end map
+    create map result:
+        "node" is sc_node
+        "pos" is p
+    end map
+    return result
+end action
+
+// set NAME = EXPR
+define action called scribe_parse_set with parameters sc_tagsrc:
+    store after as scribe_after_word of sc_tagsrc and "set"
+    store eq_pos as indexof of after and "="
+    check if eq_pos is less than 0:
+        return scribe_set_node of (trim of after) and "null"
+    end check
+    store sc_name as trim of (substring of after and 0 and eq_pos)
+    store rhs_start as eq_pos plus 1
+    store sc_expr as trim of (substring of after and rhs_start and ((length of after) minus rhs_start))
+    return scribe_set_node of sc_name and sc_expr
+end action
+
+// Parse the whole token list into a node list.
+define action called scribe_parse with parameters sc_toks:
+    store no_stops as []
+    store res as scribe_parse_seq of sc_toks and 0 and no_stops
+    return res["nodes"]
+end action
+
+// --- renderer
+
+define action called scribe_render_output with parameters sc_node and sc_ctx and sc_scope:
+    store sc_val as scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope
+    check if scribe_is_safe of sc_val:
+        return sc_val["__scribe_safe__"]
+    end check
+    return scribe_escape of (scribe_to_text of sc_val)
+end action
+
+define action called scribe_render_if with parameters sc_node and sc_ctx and sc_scope:
+    for each branch in sc_node["branches"]:
+        store cval as scribe_eval_expr of (branch["cond"]) and sc_ctx and sc_scope
+        check if scribe_truthy of cval:
+            return scribe_render_nodes of (branch["body"]) and sc_ctx and sc_scope
+        end check
+    end for
+    return scribe_render_nodes of (sc_node["else_body"]) and sc_ctx and sc_scope
+end action
+
+define action called scribe_render_for with parameters sc_node and sc_ctx and sc_scope:
+    store list_val as scribe_eval_expr of (sc_node["list_expr"]) and sc_ctx and sc_scope
+    check if (typeof of list_val) is not "List":
+        return scribe_render_nodes of (sc_node["else_body"]) and sc_ctx and sc_scope
+    end check
+    store sc_total as length of list_val
+    check if sc_total is equal to 0:
+        return scribe_render_nodes of (sc_node["else_body"]) and sc_ctx and sc_scope
+    end check
+    store out as ""
+    store sc_i as 0
+    store save_depth as length of sc_scope
+    repeat while sc_i is less than sc_total:
+        store item_bind as scribe_binding of (sc_node["var"]) and (list_val[sc_i])
+        store loop_bind as scribe_binding of "loop" and (scribe_make_loop of sc_i and sc_total)
+        push with sc_scope and item_bind
+        push with sc_scope and loop_bind
+        change out to out with (scribe_render_nodes of (sc_node["body"]) and sc_ctx and sc_scope)
+        repeat while (length of sc_scope) is greater than save_depth:
+            store discard as pop of sc_scope
+        end repeat
+        change sc_i to sc_i plus 1
+    end repeat
+    return out
+end action
+
+define action called scribe_render_nodes with parameters sc_nodes and sc_ctx and sc_scope:
+    store out as ""
+    for each sc_node in sc_nodes:
+        store knd as sc_node["kind"]
+        check if knd is "text":
+            change out to out with (sc_node["body"])
+        otherwise:
+            check if knd is "output":
+                change out to out with (scribe_render_output of sc_node and sc_ctx and sc_scope)
+            otherwise:
+                check if knd is "set":
+                    store sval as scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope
+                    push with sc_scope and (scribe_binding of (sc_node["name"]) and sval)
+                otherwise:
+                    check if knd is "if":
+                        change out to out with (scribe_render_if of sc_node and sc_ctx and sc_scope)
+                    otherwise:
+                        check if knd is "for":
+                            change out to out with (scribe_render_for of sc_node and sc_ctx and sc_scope)
+                        end check
+                    end check
+                end check
+            end check
+        end check
+    end for
+    return out
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 5 — public API
+// ----------------------------------------------------------------------------
+
+// Render a template string against a context map. Returns the output text.
+define action called scribe_render with parameters sc_template and sc_context:
+    store sc_toks as scribe_lex of sc_template
+    store sc_nodes as scribe_parse of sc_toks
+    store sc_scope as []
+    return scribe_render_nodes of sc_nodes and sc_context and sc_scope
+end action
+
+// Read a template file from disk and render it against a context map.
+define action called scribe_render_file with parameters sc_path and sc_context:
+    open file at sc_path for reading as fh
+    wait for store tpl_src as read content from fh
+    close file fh
+    return scribe_render of tpl_src and sc_context
+end action

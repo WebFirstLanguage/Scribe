@@ -1,0 +1,206 @@
+// Scribe test suite.
+//
+// This file contains only the test cases. It must be bundled with the engine
+// before running, because WFL's `load module` does not expose a module's
+// actions to the analyzer. Run it with:
+//
+//     build/bundle.sh tests/scribe.test.wfl build/scribe.test.bundle.wfl
+//     wfl --test build/scribe.test.bundle.wfl
+//
+// (or use the convenience script tests/run.sh)
+
+create map addr:
+    "city" is "Paris"
+end map
+create map person:
+    "name" is "Alice"
+    "age" is 30
+    "admin" is yes
+    "addr" is addr
+end map
+store tag_list as ["wfl", "scribe", "twig"]
+create map t_ctx:
+    "user" is person
+    "tags" is tag_list
+    "title" is "Tom & Jerry <fun>"
+    "num" is 7
+    "blank" is ""
+end map
+
+describe "text and output":
+
+    test "plain text passes through":
+        store got as scribe_render of "hello world" and t_ctx
+        expect got to equal "hello world"
+    end test
+
+    test "variable interpolation":
+        store got as scribe_render of "Hi {{ user.name }}!" and t_ctx
+        expect got to equal "Hi Alice!"
+    end test
+
+    test "nested path lookup":
+        store got as scribe_render of "{{ user.addr.city }}" and t_ctx
+        expect got to equal "Paris"
+    end test
+
+    test "list index in path":
+        store got as scribe_render of "{{ tags.0 }}-{{ tags.2 }}" and t_ctx
+        expect got to equal "wfl-twig"
+    end test
+
+    test "missing variable renders empty":
+        store got as scribe_render of "start-{{ user.missing }}-end" and t_ctx
+        expect got to equal "start--end"
+    end test
+
+    test "comments are stripped":
+        store got as scribe_render of "a{# hidden #}b" and t_ctx
+        expect got to equal "ab"
+    end test
+
+end describe
+
+describe "auto-escaping and security":
+
+    test "html is escaped by default":
+        store got as scribe_render of "{{ title }}" and t_ctx
+        expect got to equal "Tom &amp; Jerry &lt;fun&gt;"
+    end test
+
+    test "raw filter opts out of escaping":
+        store got as scribe_render of "{{ title | raw }}" and t_ctx
+        expect got to equal "Tom & Jerry <fun>"
+    end test
+
+    test "escape filter is explicit and not double-escaped":
+        store got as scribe_render of "{{ title | escape }}" and t_ctx
+        expect got to equal "Tom &amp; Jerry &lt;fun&gt;"
+    end test
+
+end describe
+
+describe "conditionals":
+
+    test "if true branch":
+        store got as scribe_render of "{% if user.admin %}yes{% else %}no{% endif %}" and t_ctx
+        expect got to equal "yes"
+    end test
+
+    test "if false branch":
+        store got as scribe_render of "{% if num > 100 %}big{% else %}small{% endif %}" and t_ctx
+        expect got to equal "small"
+    end test
+
+    test "elseif chain":
+        store got as scribe_render of "{% if num > 100 %}a{% elseif num > 5 %}b{% else %}c{% endif %}" and t_ctx
+        expect got to equal "b"
+    end test
+
+    test "comparison operators":
+        store got as scribe_render of "{% if num == 7 %}eq{% endif %}{% if num >= 7 %}ge{% endif %}" and t_ctx
+        expect got to equal "eqge"
+    end test
+
+    test "logical and / or / not":
+        store got as scribe_render of "{% if user.admin and not (num > 100) %}ok{% endif %}" and t_ctx
+        expect got to equal "ok"
+    end test
+
+end describe
+
+describe "loops":
+
+    test "for over a list":
+        store got as scribe_render of "{% for t in tags %}{{ t }},{% endfor %}" and t_ctx
+        expect got to equal "wfl,scribe,twig,"
+    end test
+
+    test "loop.index is 1-based":
+        store got as scribe_render of "{% for t in tags %}{{ loop.index }}{% endfor %}" and t_ctx
+        expect got to equal "123"
+    end test
+
+    test "loop.first and loop.last":
+        store got as scribe_render of "{% for t in tags %}{% if loop.first %}<{% endif %}{{ t }}{% if loop.last %}>{% endif %}{% endfor %}" and t_ctx
+        expect got to equal "<wflscribetwig>"
+    end test
+
+    test "for-else on empty collection":
+        store got as scribe_render of "{% for x in missing %}X{% else %}none{% endfor %}" and t_ctx
+        expect got to equal "none"
+    end test
+
+end describe
+
+describe "set and expressions":
+
+    test "set binds a variable":
+        store got as scribe_render of "{% set g = 'Hi ' ~ user.name %}{{ g }}" and t_ctx
+        expect got to equal "Hi Alice"
+    end test
+
+    test "arithmetic in output":
+        store got as scribe_render of "{{ num * 3 + 1 }}" and t_ctx
+        expect got to equal "22"
+    end test
+
+    test "string literal":
+        store got as scribe_render of "{{ 'hello' }}" and t_ctx
+        expect got to equal "hello"
+    end test
+
+end describe
+
+describe "filters":
+
+    test "upper and lower":
+        store got as scribe_render of "{{ user.name | upper }}/{{ user.name | lower }}" and t_ctx
+        expect got to equal "ALICE/alice"
+    end test
+
+    test "filter chain":
+        store got as scribe_render of "{{ user.name | upper | lower }}" and t_ctx
+        expect got to equal "alice"
+    end test
+
+    test "default on empty value":
+        store got as scribe_render of "{{ blank | default('N/A') }}" and t_ctx
+        expect got to equal "N/A"
+    end test
+
+    test "join a list":
+        store got as scribe_render of "{{ tags | join(', ') }}" and t_ctx
+        expect got to equal "wfl, scribe, twig"
+    end test
+
+    test "length of a list":
+        store got as scribe_render of "{{ tags | length }}" and t_ctx
+        expect got to equal "3"
+    end test
+
+    test "replace":
+        store got as scribe_render of "{{ 'a-b-c' | replace('-', '+') }}" and t_ctx
+        expect got to equal "a+b+c"
+    end test
+
+    test "first and last of a list":
+        store got as scribe_render of "{{ tags | first }}/{{ tags | last }}" and t_ctx
+        expect got to equal "wfl/twig"
+    end test
+
+    test "capitalize":
+        store got as scribe_render of "{{ 'hello world' | capitalize }}" and t_ctx
+        expect got to equal "Hello world"
+    end test
+
+end describe
+
+describe "verbatim":
+
+    test "verbatim emits its body literally":
+        store got as scribe_render of "{% verbatim %}{{ user.name }} {% if x %}{% endif %}{% endverbatim %}" and t_ctx
+        expect got to equal "{{ user.name }} {% if x %}{% endif %}"
+    end test
+
+end describe
