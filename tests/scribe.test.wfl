@@ -1,13 +1,14 @@
 // Scribe test suite.
 //
-// This file contains only the test cases. It must be bundled with the engine
-// before running, because WFL's `load module` does not expose a module's
-// actions to the analyzer. Run it with:
+// The engine is pulled in with `include from`, which exposes its actions to
+// this file. Run from the repository root (so the fixture paths under build/
+// resolve):
 //
-//     build/bundle.sh tests/scribe.test.wfl build/scribe.test.bundle.wfl
-//     wfl --test build/scribe.test.bundle.wfl
+//     wfl --test tests/scribe.test.wfl
 //
-// (or use the convenience script tests/run.sh)
+// or use the convenience script tests/run.sh.
+
+include from "../src/scribe.wfl"
 
 create map addr:
     "city" is "Paris"

@@ -2,7 +2,8 @@
 // Scribe — a Twig-inspired templating engine written in WFL.
 //
 // This file is the entire engine. It defines only actions (no top-level side
-// effects) so it can be bundled with a caller script (see build/bundle.sh).
+// effects). Pull it into your program with `include from "…/scribe.wfl"`,
+// which exposes these actions to the caller.
 //
 // Pipeline:  template text -> scribe_lex -> scribe_parse -> scribe_render_nodes
 // Public:    scribe_render of template and context

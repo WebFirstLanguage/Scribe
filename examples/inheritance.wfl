@@ -1,7 +1,8 @@
 // Scribe example — template inheritance with {% extends %}, {% block %}, and
-// {% include %}. Run this from the repository root so the relative template
-// paths resolve:
+// {% include %}. The engine is pulled in below with `include from`. Run with:
 //     examples/run.sh examples/inheritance.wfl /path/to/wfl
+
+include from "../src/scribe.wfl"
 
 create map ctx:
     "site" is "Ada's Notebook"

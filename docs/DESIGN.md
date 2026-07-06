@@ -181,31 +181,39 @@ secure default WFL Principle 8 asks for.
 | Iterating a map yields values, not keys | Can't enumerate context keys | Look variables up by name; never enumerate |
 | Value-returning calls need `name of a and b` (the `with a and b` form mis-parses `a and b` as a logical `and`) | API ergonomics | Every internal/public value call uses the `of … and …` form |
 | Type checker rejects non-boolean `check if` conditions | Can't rely on implicit truthiness | Explicit `scribe_truthy` helper returns a real boolean |
-| `load module` symbols are invisible to the static analyzer (fatal "not defined") | Can't split the engine across files that share actions | Ship the engine as one self-contained file; a tiny bundler concatenates it with test/demo scripts |
-| A function parameter that shares a name with an existing **global** variable receives the global's value instead of the argument | Any user global colliding with an engine parameter silently corrupts rendering | Every engine parameter is prefixed with `sc_` so no plausible user global collides |
+| Sharing actions across files | Splitting engine from callers | Callers pull the engine in with `include from "…/scribe.wfl"`, which exposes its actions (unlike `load module`, whose scope is isolated) |
 | A variable can't be `store`d twice in sibling branches, and `create list` can't run twice in a loop | Shapes control flow | Hoist the declaration and use `change`; reset lists with `change x to []` |
-| The string value `"[]"` is coerced to an empty list | A rendered result that is exactly `[]` comes back as a list | Documented; any surrounding content avoids it (even `"[1, 2]"` is unaffected) |
 
-Several of these are reported upstream as WFL issues. The most serious — the
-parameter/global shadowing bug — is why every engine parameter carries the
-`sc_` prefix.
+### WFL bugs found and reported (now fixed upstream)
+
+Building Scribe surfaced two correctness bugs in WFL that were reported and
+then fixed:
+
+| Bug | Symptom | Status |
+| --- | --- | --- |
+| [wfl#582](https://github.com/WebFirstLanguage/wfl/issues/582) — a function parameter that shares a name with an existing **global** was overridden by the global's value | Any user global colliding with an engine parameter silently corrupted rendering | **Fixed upstream.** Scribe still prefixes every parameter with `sc_` defensively (harmless, and keeps it working on older WFL builds). |
+| [wfl#583](https://github.com/WebFirstLanguage/wfl/issues/583) — the string value `"[]"` was coerced to an empty list | A rendered result equal to `[]` came back as a list | **Fixed upstream.** No workaround needed anymore. |
+
+A third report, [wfl#584](https://github.com/WebFirstLanguage/wfl/issues/584)
+(`load module` symbols invisible to the analyzer), was resolved by pointing
+users at the `include from` construct, which is exactly how Scribe now loads
+its engine.
 
 ## 8. Repository layout
 
 ```
 Scribe/
 ├── src/scribe.wfl        # the entire engine (pure library: actions only)
-├── build/bundle.sh       # concatenates the engine with a script to run it
-├── tests/                # describe/test suites (run via the bundler)
+├── tests/                # describe/test suite (pulls in the engine via include from)
 ├── examples/             # example templates + runnable demos with expected output
 ├── docs/                 # this design doc + the syntax reference
 └── README.md
 ```
 
-Because WFL's `load module` cannot share actions across files (see §7), the
-engine lives in a single file and the bundler (`build/bundle.sh`) produces a
-runnable program by concatenating `src/scribe.wfl` with a caller script. This
-keeps the source DRY while working within the language today.
+The engine lives in a single self-contained file. Callers (tests, examples,
+your own programs) pull it in with `include from "…/scribe.wfl"`, which runs
+the engine file and exposes its actions to the caller. The path is resolved
+relative to the including file's directory.
 
 ## 9. Roadmap
 

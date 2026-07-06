@@ -56,12 +56,13 @@ See **[docs/SYNTAX.md](docs/SYNTAX.md)** for the full language reference and
 
 ## Quick start
 
-Scribe is a single WFL library file, `src/scribe.wfl`. Because WFL's
-`load module` doesn't share actions across files, you combine the engine with
-your own script using the tiny bundler in `build/bundle.sh`.
+Scribe is a single WFL library file, `src/scribe.wfl`. Pull it into your own
+program with `include from`, which exposes its actions to you:
 
 ```wfl
-// my_app.wfl — your caller script
+// my_app.wfl — your program
+include from "src/scribe.wfl"
+
 create map ctx:
     "name" is "World"
     "items" is ["one", "two", "three"]
@@ -74,11 +75,12 @@ display out
 Run it:
 
 ```sh
-# bundle the engine + your script, then run with the wfl binary
-build/bundle.sh my_app.wfl build/my_app.run.wfl
-wfl build/my_app.run.wfl
+wfl my_app.wfl
 # => Hello World! (3 items)
 ```
+
+The `include from` path is resolved relative to your file's directory, so
+adjust it to wherever you keep `src/scribe.wfl`.
 
 The public API is two actions:
 
@@ -104,32 +106,28 @@ example (`*.expected.html`).
 
 ## Running the tests
 
-The suite uses WFL's built-in `describe` / `test` framework:
+The suite uses WFL's built-in `describe` / `test` framework and pulls in the
+engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 30  Passed: 30  Failed: 0
+# Total: 32  Passed: 32  Failed: 0
 ```
 
-`tests/run.sh` bundles `src/scribe.wfl` with `tests/scribe.test.wfl` and runs
-it under `wfl --test`.
-
-> **Note on WFL's static checker.** When you run a bundled program the WFL
-> type checker prints a number of `could not infer type` notes to *stderr*.
-> These are non-fatal (a limitation of type inference across user-defined
-> actions) and do not affect the result — the program still runs and exits 0.
-> See the roadmap for the upstream issue.
+> **Note on WFL's static checker.** The WFL type checker prints some
+> `could not infer type` notes to *stderr* for calls into the engine's
+> actions. These are non-fatal — the program runs and the tests exit 0.
 
 ## Project layout
 
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── build/bundle.sh           # engine + caller -> runnable program
-├── tests/scribe.test.wfl     # test suite (30 cases)
-├── tests/run.sh              # bundle + run the tests
+├── tests/scribe.test.wfl     # test suite (32 cases), includes the engine
+├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
-├── examples/run.sh           # bundle + run an example
+├── examples/inheritance.wfl  # inheritance example + expected output
+├── examples/run.sh           # run an example
 └── docs/                     # SYNTAX.md and DESIGN.md
 ```
 
@@ -142,16 +140,18 @@ more filters/functions. Details in [docs/DESIGN.md](docs/DESIGN.md).
 ## Upstream WFL issues found while building Scribe
 
 Building a non-trivial program in WFL surfaced a few language bugs, reported
-upstream:
+upstream — all since addressed:
 
 - [wfl#582](https://github.com/WebFirstLanguage/wfl/issues/582) — a function
-  parameter is overridden by a same-named global variable. (This is why every
-  engine parameter is prefixed `sc_`.)
+  parameter was overridden by a same-named global variable. **Fixed upstream.**
+  Scribe still prefixes every engine parameter `sc_` defensively (harmless, and
+  keeps it working on older WFL builds).
 - [wfl#583](https://github.com/WebFirstLanguage/wfl/issues/583) — the string
-  value `"[]"` is coerced to an empty list.
-- [wfl#584](https://github.com/WebFirstLanguage/wfl/issues/584) — actions from
-  `load module` are invisible to the static analyzer, which is why Scribe ships
-  as one file plus a bundler.
+  value `"[]"` was coerced to an empty list. **Fixed upstream.**
+- [wfl#584](https://github.com/WebFirstLanguage/wfl/issues/584) — `load module`
+  symbols are invisible to the analyzer. Resolved by using `include from`
+  instead, which exposes the included file's actions — this is how Scribe loads
+  its engine.
 
 ## License
 

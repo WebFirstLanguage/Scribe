@@ -1,9 +1,9 @@
 // Scribe example — rendering a small blog page.
 //
-// Run it with the bundler (the engine must be concatenated first):
-//     build/bundle.sh examples/blog.wfl build/blog.run.wfl
-//     wfl build/blog.run.wfl
-// or simply:  examples/run.sh examples/blog.wfl
+// Run it with:   examples/run.sh examples/blog.wfl /path/to/wfl
+// (the engine is pulled in below with `include from`.)
+
+include from "../src/scribe.wfl"
 
 // --- build the context (plain maps + lists, JSON-shaped) -------------------
 
