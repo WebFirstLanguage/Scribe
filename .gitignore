@@ -1,0 +1,3 @@
+# Transient test fixtures written by the suite
+build/*.tmp
+*.debug.txt
