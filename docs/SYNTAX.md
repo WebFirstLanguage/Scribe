@@ -79,8 +79,9 @@ Built-in filters:
 | `raw` | Opt out of auto-escaping for this value |
 
 The `markdown` filter HTML-escapes its input *before* applying formatting, so
-untrusted content can't inject markup — the result is then trusted and printed
-without a second round of escaping.
+untrusted content can't inject markup, and it neutralises dangerous link URL
+schemes (`javascript:`, `vbscript:`, `data:` become `#`). The result is then
+trusted and printed without a second round of escaping.
 
 ### Expressions
 

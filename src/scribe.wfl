@@ -587,6 +587,15 @@ define action called scribe_is_name with parameters sc_tk and sc_word:
     return no
 end action
 
+// Is this the synthetic end-of-tokens sentinel? Used so an argument loop with a
+// missing ")" stops cleanly instead of scanning past the end of the token list.
+define action called scribe_tok_is_end with parameters sc_tk:
+    check if sc_tk["t"] is "end":
+        return yes
+    end check
+    return no
+end action
+
 // --- variable lookup (overlay scope first, then context map)
 
 define action called scribe_lookup with parameters sc_name and sc_ctx and sc_scope:
@@ -745,12 +754,14 @@ define action called scribe_reverse_list with parameters sc_lst:
     return out
 end action
 
-// Remove every `<...>` HTML tag from `sc_s`, leaving the text content.
+// Remove every `<...>` HTML tag from `sc_s`, leaving the text content. An
+// unmatched `<` (e.g. "5 < 10") is not a tag: its literal text is preserved.
 define action called scribe_strip_tags with parameters sc_s:
     store out as ""
     store i as 0
     store n as length of sc_s
     store intag as no
+    store tag_start as 0
     repeat while i is less than n:
         store ch as substring of sc_s and i and 1
         check if intag:
@@ -760,12 +771,17 @@ define action called scribe_strip_tags with parameters sc_s:
         otherwise:
             check if ch is "<":
                 change intag to yes
+                change tag_start to i
             otherwise:
                 change out to out with ch
             end check
         end check
         change i to i plus 1
     end repeat
+    // A `<` that never closed was ordinary text, not a tag — keep it verbatim.
+    check if intag:
+        change out to out with (substring of sc_s and tag_start and (n minus tag_start))
+    end check
     return out
 end action
 
@@ -822,6 +838,87 @@ define action called scribe_md_wrap with parameters sc_s and sc_delim and sc_ope
     return out
 end action
 
+// Shield markdown-significant characters inside a code span so the later
+// emphasis and link passes can't reach into it and pair delimiters across span
+// boundaries. Restored verbatim by scribe_md_unshield at the end.
+define action called scribe_md_shield with parameters sc_s:
+    store t as sc_s
+    change t to scribe_replace_all of t and "*" and "%%SCSTAR%%"
+    change t to scribe_replace_all of t and "_" and "%%SCUND%%"
+    change t to scribe_replace_all of t and "[" and "%%SCLB%%"
+    change t to scribe_replace_all of t and "]" and "%%SCRB%%"
+    change t to scribe_replace_all of t and "(" and "%%SCLP%%"
+    change t to scribe_replace_all of t and ")" and "%%SCRP%%"
+    return t
+end action
+
+define action called scribe_md_unshield with parameters sc_s:
+    store t as sc_s
+    change t to scribe_replace_all of t and "%%SCSTAR%%" and "*"
+    change t to scribe_replace_all of t and "%%SCUND%%" and "_"
+    change t to scribe_replace_all of t and "%%SCLB%%" and "["
+    change t to scribe_replace_all of t and "%%SCRB%%" and "]"
+    change t to scribe_replace_all of t and "%%SCLP%%" and "("
+    change t to scribe_replace_all of t and "%%SCRP%%" and ")"
+    return t
+end action
+
+// Convert `code` spans to <code>…</code>, shielding their contents so nothing
+// inside them is later treated as emphasis or a link. Done as its own pass
+// (before emphasis) so a delimiter hidden in one span can't pair with one in
+// another span.
+define action called scribe_md_code with parameters sc_s:
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store hit as scribe_index_from of sc_s and "`" and i
+        check if hit is less than 0:
+            change out to out with (substring of sc_s and i and (n minus i))
+            change i to n
+        otherwise:
+            store hit2 as scribe_index_from of sc_s and "`" and (hit plus 1)
+            check if hit2 is less than 0:
+                change out to out with (substring of sc_s and i and (n minus i))
+                change i to n
+            otherwise:
+                change out to out with (substring of sc_s and i and (hit minus i))
+                store mid as substring of sc_s and (hit plus 1) and (hit2 minus (hit plus 1))
+                change out to out with "<code>" with (scribe_md_shield of mid) with "</code>"
+                change i to hit2 plus 1
+            end check
+        end check
+    end repeat
+    return out
+end action
+
+// Reject dangerous URL schemes in a markdown link so a `[click](javascript:…)`
+// can't smuggle script through the "safe" markdown filter. Whitespace is
+// stripped first so obfuscated schemes are still caught.
+define action called scribe_md_safe_url with parameters sc_url:
+    store compact as ""
+    store i as 0
+    store n as length of sc_url
+    repeat while i is less than n:
+        store ch as substring of sc_url and i and 1
+        check if scribe_negate of (scribe_is_space of ch):
+            change compact to compact with ch
+        end check
+        change i to i plus 1
+    end repeat
+    store low as tolowercase of compact
+    check if (indexof of low and "javascript:") is equal to 0:
+        return "#"
+    end check
+    check if (indexof of low and "vbscript:") is equal to 0:
+        return "#"
+    end check
+    check if (indexof of low and "data:") is equal to 0:
+        return "#"
+    end check
+    return sc_url
+end action
+
 // Turn [text](url) into an anchor. Runs on already-escaped text.
 define action called scribe_md_links with parameters sc_s:
     store out as ""
@@ -854,7 +951,7 @@ define action called scribe_md_links with parameters sc_s:
                     change out to out with (substring of sc_s and i and (ob minus i))
                     store ltext as substring of sc_s and (ob plus 1) and (cb minus (ob plus 1))
                     store lurl as substring of sc_s and (op plus 1) and (cp minus (op plus 1))
-                    change out to out with "<a href=\"" with lurl with "\">" with ltext with "</a>"
+                    change out to out with "<a href=\"" with (scribe_md_safe_url of lurl) with "\">" with ltext with "</a>"
                     change i to cp plus 1
                 end check
             end check
@@ -866,11 +963,12 @@ end action
 // Apply inline markdown to one line/paragraph of text.
 define action called scribe_md_inline with parameters sc_s:
     store t as scribe_escape of sc_s
-    change t to scribe_md_wrap of t and "`" and "<code>" and "</code>"
+    change t to scribe_md_code of t
     change t to scribe_md_wrap of t and "**" and "<strong>" and "</strong>"
     change t to scribe_md_wrap of t and "__" and "<strong>" and "</strong>"
     change t to scribe_md_wrap of t and "*" and "<em>" and "</em>"
     change t to scribe_md_links of t
+    change t to scribe_md_unshield of t
     return t
 end action
 
@@ -1190,7 +1288,7 @@ define action called scribe_p_primary with parameters sc_toks and sc_pos and sc_
                     // resolved value as a macro.
                     store cargs as []
                     change np to np plus 1
-                    repeat while scribe_negate of (scribe_is_op of (sc_toks[np]) and ")"):
+                    repeat while (scribe_negate of (scribe_is_op of (sc_toks[np]) and ")")) and (scribe_negate of (scribe_tok_is_end of (sc_toks[np]))):
                         store ares as scribe_p_or of sc_toks and np and sc_ctx and sc_scope
                         push with cargs and (ares["val"])
                         change np to ares["pos"]
@@ -1198,7 +1296,9 @@ define action called scribe_p_primary with parameters sc_toks and sc_pos and sc_
                             change np to np plus 1
                         end check
                     end repeat
-                    change np to np plus 1
+                    check if scribe_is_op of (sc_toks[np]) and ")":
+                        change np to np plus 1
+                    end check
                     change curval to scribe_call_macro of curval and cargs and sc_ctx and sc_scope
                 otherwise:
                     change postfix to no
@@ -1222,7 +1322,7 @@ define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_c
         change fargs to []
         check if scribe_is_op of (sc_toks[np]) and "(":
             change np to np plus 1
-            repeat while scribe_negate of (scribe_is_op of (sc_toks[np]) and ")"):
+            repeat while (scribe_negate of (scribe_is_op of (sc_toks[np]) and ")")) and (scribe_negate of (scribe_tok_is_end of (sc_toks[np]))):
                 store ares as scribe_p_or of sc_toks and np and sc_ctx and sc_scope
                 push with fargs and (ares["val"])
                 change np to ares["pos"]
@@ -1230,7 +1330,9 @@ define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_c
                     change np to np plus 1
                 end check
             end repeat
-            change np to np plus 1
+            check if scribe_is_op of (sc_toks[np]) and ")":
+                change np to np plus 1
+            end check
         end check
         change curval to scribe_apply_filter of sc_fname and curval and fargs
     end repeat
@@ -2170,11 +2272,14 @@ define action called scribe_do_import with parameters sc_node and sc_ctx and sc_
 end action
 
 // Execute a {% from "file" import a, b %}: bind the named macros directly.
-// Idempotent on the first requested name.
+// Idempotent: skip only when the first name is already bound *as a macro* (i.e.
+// a prior identical import), so a collision with an unrelated variable — a loop
+// variable, say — doesn't silently drop the remaining imports.
 define action called scribe_do_from with parameters sc_node and sc_ctx and sc_scope:
     store names as sc_node["names"]
     check if (length of names) is greater than 0:
-        check if scribe_scope_has of (names[0]) and sc_scope:
+        store existing as scribe_lookup of (names[0]) and sc_ctx and sc_scope
+        check if scribe_is_macro of existing:
             return yes
         end check
     end check

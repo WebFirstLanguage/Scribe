@@ -293,6 +293,12 @@ describe "macros":
         expect got to equal "[x]"
     end test
 
+    test "a call with a missing closing paren fails gracefully, not fatally":
+        store t as "{% macro hi(n) %}Hi {{ n }}{% endmacro %}{{ hi('a' }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Hi a"
+    end test
+
     test "an imported macro can call a sibling in its home file":
         open file at "build/_sc_lib.tmp" for writing as fl
         wait for write content "{% macro wrap(x) %}[{{ x }}]{% endmacro %}{% macro shout(x) %}{{ wrap(x) | upper }}{% endmacro %}" into fl
@@ -341,6 +347,11 @@ describe "new filters":
         expect got to equal "bold text"
     end test
 
+    test "striptags keeps an unmatched < as literal text":
+        store got as scribe_render of "{{ '5 < 10 apples' | striptags }}" and t_ctx
+        expect got to equal "5 &lt; 10 apples"
+    end test
+
     test "asset builds a root-relative path":
         store got as scribe_render of "{{ 'css/app.css' | asset }}" and t_ctx
         expect got to equal "/css/app.css"
@@ -373,6 +384,16 @@ describe "new filters":
     test "markdown escapes raw html before formatting":
         store got as scribe_render of "{{ '<script>x</script>' | markdown }}" and t_ctx
         expect got to equal "<p>&lt;script&gt;x&lt;/script&gt;</p>"
+    end test
+
+    test "markdown neutralises a javascript: link url":
+        store got as scribe_render of "{{ '[x](javascript:evil)' | markdown }}" and t_ctx
+        expect got to equal "<p><a href=\"#\">x</a></p>"
+    end test
+
+    test "markdown does not pair delimiters across separate code spans":
+        store got as scribe_render of "{{ 'run `a**b` and `c**d`' | markdown }}" and t_ctx
+        expect got to equal "<p>run <code>a**b</code> and <code>c**d</code></p>"
     end test
 
 end describe
