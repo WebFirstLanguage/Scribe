@@ -6,7 +6,7 @@ Twig / Jinja:
 | Markup | Purpose |
 | --- | --- |
 | `{{ expression }}` | Print a value (HTML-escaped by default) |
-| `{% tag %}` | Logic: `if`, `for`, `set`, `verbatim` |
+| `{% tag %}` | Logic: `if`, `for`, `set`, `include`, `extends`/`block`, `macro`/`import`/`from`, `verbatim` |
 | `{# comment #}` | A comment — never rendered |
 
 Everything else is literal text and is copied to the output verbatim.
@@ -70,8 +70,17 @@ Built-in filters:
 | `default(fallback)` | Use `fallback` when the value is empty/nothing |
 | `replace(from, to)` | Replace every `from` with `to` |
 | `abs` / `round` | Numeric absolute value / rounding |
+| `truncate(len)` / `truncate(len, suffix)` | Shorten text to `len` characters, appending `suffix` (default `"..."`) when it was cut |
+| `striptags` | Remove every `<…>` HTML tag, leaving the text content |
+| `date(format)` | Format a `Date` / `Time` / `DateTime` value with a strftime pattern (e.g. `%Y-%m-%d`) |
+| `asset(base?)` / `url(base?)` | Build a URL: join an optional `base` with the value using exactly one slash; an empty base yields a root-relative path (`/css/app.css`) |
+| `markdown` | Render a safe subset of Markdown (headings, paragraphs, lists, `**bold**`, `*italic*`, `` `code` ``, `[links](url)`) to trusted HTML |
 | `escape` / `e` | Explicitly HTML-escape (safe against double-escaping) |
 | `raw` | Opt out of auto-escaping for this value |
+
+The `markdown` filter HTML-escapes its input *before* applying formatting, so
+untrusted content can't inject markup — the result is then trusted and printed
+without a second round of escaping.
 
 ### Expressions
 
@@ -167,6 +176,69 @@ Render another template file inline, sharing the current context:
 The path is an expression, so `{% include partial_name %}` (a variable) works
 too. Paths are resolved relative to the process's working directory.
 
+### Passing a scoped context — `with { … }`
+
+Give a partial an explicit set of variables inline, instead of `{% set %}`-ing
+them into the surrounding scope first:
+
+```twig
+{% include "partials/badge.html" with { label: "New", tone: "success" } %}
+```
+
+The values are expressions evaluated in the caller's scope. Keys may be bare
+names or quoted strings. The extra variables are visible only while the partial
+renders; they don't leak back out.
+
+Add `only` to **isolate** the partial — it then sees *only* the variables you
+passed, not the caller's context or scope:
+
+```twig
+{% include "partials/badge.html" with { label: "New" } only %}
+```
+
+## Macros — `{% macro %}`
+
+A **macro** is a reusable, parameterised fragment — the building block for DRY
+theme components. Define it, then call it like a function inside `{{ … }}`:
+
+```twig
+{% macro input(name, value) %}
+  <input name="{{ name }}" value="{{ value }}">
+{% endmacro %}
+
+{{ input("email", user.email) }}
+```
+
+* Arguments bind to the parameters in order; a missing argument is `nothing`.
+* A macro can be called before its definition appears (definitions are hoisted).
+* Macro output is **trusted** — it isn't escaped again — but each `{{ … }}`
+  *inside* the macro is escaped as usual, so the pieces stay safe.
+
+### Sharing macros across files — `{% import %}` / `{% from %}`
+
+Keep a component library in its own file and pull it in:
+
+```twig
+{# components.html #}
+{% macro button(label) %}<button>{{ label }}</button>{% endmacro %}
+{% macro badge(text) %}<span class="badge">{{ text }}</span>{% endmacro %}
+```
+
+Import the whole file under a namespace:
+
+```twig
+{% import "components.html" as ui %}
+{{ ui.button("Save") }}
+{{ ui.badge("New") }}
+```
+
+…or import specific macros by name:
+
+```twig
+{% from "components.html" import button, badge %}
+{{ button("Save") }}
+```
+
 ## Template inheritance — `{% extends %}` / `{% block %}`
 
 A **base** template defines named blocks with default content:
@@ -193,8 +265,27 @@ any block it leaves out keeps the base's default:
 ```
 
 `{% extends %}` must name the parent template; the child's content outside of
-`{% block %}` tags is ignored (as in Twig). A single level of inheritance is
-supported.
+`{% block %}` tags is ignored (as in Twig).
+
+Inheritance can be **many levels deep**: a base can itself `{% extends %}` a
+grandparent, and so on. Each level may override blocks and introduce new ones
+(a block can even be nested inside another block). When more than one level
+defines the same block, the **most-derived** (closest to the leaf child) wins:
+
+```twig
+{# base.html — the page skeleton #}
+<title>{% block title %}Site{% endblock %}</title>
+<body>{% block body %}{% endblock %}</body>
+
+{# blog.html — a theme layer on top of the base #}
+{% extends "base.html" %}
+{% block body %}<article>{% block content %}{% endblock %}</article>{% endblock %}
+
+{# post.html — the page, on top of the theme #}
+{% extends "blog.html" %}
+{% block title %}My Post{% endblock %}
+{% block content %}<h1>Hello</h1>{% endblock %}
+```
 
 ## Verbatim — `{% verbatim %}`
 
@@ -235,11 +326,10 @@ paths in the template walk them.
 
 ## Known limitations (current version)
 
-* Template inheritance is single-level: a child `{% extends %}` a base, but the
-  base cannot itself extend a grandparent yet. Macros are not yet implemented —
-  see the roadmap in [DESIGN.md](DESIGN.md).
 * `for key, value in map` is not supported (WFL does not expose map-key
   iteration); iterate lists instead.
-* A rendered result that is exactly the two characters `[]` is affected by a
-  WFL runtime quirk (a string equal to `[]` is coerced to an empty list). Any
-  surrounding content avoids it. This is tracked upstream.
+* No whitespace control (`{{-` / `-}}`) yet — see the roadmap in
+  [DESIGN.md](DESIGN.md).
+* The `markdown` filter renders a deliberately small subset (headings,
+  paragraphs, unordered lists, `**bold**`, `*italic*`, `` `code` ``, and
+  `[links](url)`); it is not a full CommonMark implementation.

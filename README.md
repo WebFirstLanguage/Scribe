@@ -30,7 +30,7 @@ secure unless you explicitly opt out.
 - **Pure WFL.** No Rust, no host-language escape hatch. Scribe is one WFL file
   that runs anywhere WFL runs.
 - **Small and tested.** A readable lexer → parser → renderer pipeline with a
-  30-case test suite.
+  51-case test suite.
 
 ## Features
 
@@ -38,16 +38,23 @@ secure unless you explicitly opt out.
 - Dotted paths into nested maps and lists: `{{ order.items.0.title }}`
 - Filters, chainable: `{{ name | upper }}`, `{{ items | join(', ') }}`
 - Filter set: `upper, lower, capitalize, title, trim, length, reverse, first,
-  last, join, default, replace, abs, round, escape/e, raw`
+  last, join, default, replace, abs, round, truncate, striptags, date, asset,
+  url, markdown, escape/e, raw`
 - Conditionals: `{% if %}` / `{% elseif %}` / `{% else %}` / `{% endif %}`
 - Loops with a `loop` helper: `{% for x in items %}` … `{% else %}` …
   `{% endfor %}`, plus `loop.index / index0 / first / last / length`
 - Variables: `{% set total = a + b %}`
 - Expressions: `+ - * /`, `~` concat, `== != < > <= >=`, `and / or / not`,
   parentheses, string & number literals, `true / false / null`
-- Includes: `{% include "partial.html" %}` (shares the current context)
-- Template inheritance: `{% extends "base.html" %}` with
-  `{% block name %}…{% endblock %}` overrides and defaults
+- Macros: `{% macro name(a, b) %}…{% endmacro %}`, called as `{{ name(x, y) }}`;
+  share them across files with `{% import "lib.html" as ui %}` (then
+  `{{ ui.name(...) }}`) or `{% from "lib.html" import name %}`
+- Includes: `{% include "partial.html" %}` (shares the current context), or with
+  an explicit scoped context: `{% include "partial.html" with { key: value } %}`
+  — add `only` to isolate the partial from the caller's variables
+- Multi-level template inheritance: `{% extends "base.html" %}` with
+  `{% block name %}…{% endblock %}` overrides and defaults, chained as many
+  levels deep as you like (child → theme → base)
 - Comments: `{# … #}`
 - Raw blocks: `{% verbatim %}…{% endverbatim %}`
 
@@ -104,6 +111,11 @@ against the templates in `examples/templates/` (run it from the repo root so the
 relative paths resolve). Expected output for both is checked in next to each
 example (`*.expected.html`).
 
+`examples/theme.wfl` puts the ecosystem features together as a **theme layer**:
+multi-level `{% extends %}` (child → blog shell → base skeleton), an
+`{% import %}`-ed macro library, an `{% include ... with { … } only %}` partial,
+and the `markdown` / `asset` / `url` filters.
+
 ## Running the tests
 
 The suite uses WFL's built-in `describe` / `test` framework and pulls in the
@@ -111,7 +123,7 @@ engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 32  Passed: 32  Failed: 0
+# Total: 51  Passed: 51  Failed: 0
 ```
 
 > **Note on WFL's static checker.** The WFL type checker prints some
@@ -123,19 +135,24 @@ tests/run.sh /path/to/wfl
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── tests/scribe.test.wfl     # test suite (32 cases), includes the engine
+├── tests/scribe.test.wfl     # test suite (51 cases), includes the engine
 ├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
 ├── examples/inheritance.wfl  # inheritance example + expected output
+├── examples/theme.wfl        # theme-layering example (macros, multi-level, filters)
 ├── examples/run.sh           # run an example
 └── docs/                     # SYNTAX.md and DESIGN.md
 ```
 
 ## Roadmap
 
-Planned next: multi-level inheritance, macros (`{% macro %}` / `{% import %}`),
-`for key, value in map` (pending WFL map-key iteration), whitespace control, and
-more filters/functions. Details in [docs/DESIGN.md](docs/DESIGN.md).
+Implemented: multi-level inheritance, macros (`{% macro %}` / `{% import %}` /
+`{% from … import %}`), scoped `{% include … with { … } %}`, and the
+`date / truncate / striptags / asset / url / markdown` filters.
+
+Planned next: `for key, value in map` (pending WFL map-key iteration),
+whitespace control (`{{-` / `-}}`), and more filters/functions. Details in
+[docs/DESIGN.md](docs/DESIGN.md).
 
 ## Upstream WFL issues found while building Scribe
 
@@ -147,7 +164,9 @@ upstream — all since addressed:
   Scribe still prefixes every engine parameter `sc_` defensively (harmless, and
   keeps it working on older WFL builds).
 - [wfl#583](https://github.com/WebFirstLanguage/wfl/issues/583) — the string
-  value `"[]"` was coerced to an empty list. **Fixed upstream.**
+  value `"[]"` was coerced to an empty list. **Fixed upstream.** Separately,
+  Scribe now renders an empty collection as empty text (Twig's behaviour), so a
+  bare `{{ empty_list }}` no longer emits the literal `[]`.
 - [wfl#584](https://github.com/WebFirstLanguage/wfl/issues/584) — `load module`
   symbols are invisible to the analyzer. Resolved by using `include from`
   instead, which exposes the included file's actions — this is how Scribe loads

@@ -120,8 +120,10 @@ Total: {{ order.total }}
 | Conditionals | `{% if EXPR %}` … `{% elseif EXPR %}` … `{% else %}` … `{% endif %}` |
 | Loops | `{% for x in EXPR %}` … `{% else %}` (when empty) … `{% endfor %}` |
 | Assignment | `{% set name = EXPR %}` |
-| Include | `{% include "path" %}` (renders another file with the current context) |
-| Inheritance | `{% extends "base" %}` + `{% block name %}` … `{% endblock %}` |
+| Include | `{% include "path" %}`, optionally `… with { key: EXPR, … } [only]` |
+| Macros | `{% macro name(a, b) %}…{% endmacro %}`, called as `{{ name(x, y) }}` |
+| Import | `{% import "path" as ns %}` / `{% from "path" import a, b %}` |
+| Inheritance | `{% extends "base" %}` + `{% block name %}` … `{% endblock %}` (multi-level) |
 | Raw block | `{% verbatim %}` … `{% endverbatim %}` (emits its body literally) |
 
 Inside a `{% for %}` body a `loop` variable is available:
@@ -150,7 +152,8 @@ Expressions appear in `{{ ... }}` and in `if` / `elseif` / `for` / `set`.
 
 `upper`, `lower`, `capitalize`, `title`, `trim`, `length`, `reverse`,
 `first`, `last`, `join(sep)`, `default(fallback)`, `replace(from, to)`,
-`abs`, `round`, `escape` / `e`, `raw`.
+`abs`, `round`, `truncate(len, suffix)`, `striptags`, `date(format)`,
+`asset(base)`, `url(base)`, `markdown`, `escape` / `e`, `raw`.
 
 ## 5. Truthiness
 
@@ -192,7 +195,7 @@ then fixed:
 | Bug | Symptom | Status |
 | --- | --- | --- |
 | [wfl#582](https://github.com/WebFirstLanguage/wfl/issues/582) — a function parameter that shares a name with an existing **global** was overridden by the global's value | Any user global colliding with an engine parameter silently corrupted rendering | **Fixed upstream.** Scribe still prefixes every parameter with `sc_` defensively (harmless, and keeps it working on older WFL builds). |
-| [wfl#583](https://github.com/WebFirstLanguage/wfl/issues/583) — the string value `"[]"` was coerced to an empty list | A rendered result equal to `[]` came back as a list | **Fixed upstream.** No workaround needed anymore. |
+| [wfl#583](https://github.com/WebFirstLanguage/wfl/issues/583) — the string value `"[]"` was coerced to an empty list | A rendered result equal to `[]` came back as a list | **Fixed upstream.** Independently, `scribe_to_text` now renders an empty collection as empty text (matching Twig), so a bare `{{ empty_list }}` never emits the literal `[]` in the first place. |
 
 A third report, [wfl#584](https://github.com/WebFirstLanguage/wfl/issues/584)
 (`load module` symbols invisible to the analyzer), was resolved by pointing
@@ -219,20 +222,34 @@ relative to the including file's directory.
 
 Implemented: lexer, parser, renderer, expressions with filters and operators,
 `if`/`for`/`set`/`verbatim`, `loop` variables, auto-escaping, the built-in
-filter set, `{% include %}`, single-level `{% extends %}` / `{% block %}`, and a
-test suite.
+filter set, `{% include %}` (with an optional scoped `with { … } [only]`
+context), **multi-level** `{% extends %}` / `{% block %}`, **macros**
+(`{% macro %}`, `{% import … as %}`, `{% from … import %}`), and a test suite.
 
-Template inheritance is threaded through the overlay scope: a child that
-`extends` a parent binds each of its `{% block %}` bodies as a scope binding
-named `"__scblock__<name>"`; when the parent renders a `{% block %}` it renders
-the child's override if one is bound, else its own default body. Includes read
-and render another file against the current context and scope.
+Template inheritance is threaded through the overlay scope. Rendering walks the
+whole `extends` chain from the leaf child up to the root ancestor, binding each
+level's `{% block %}` bodies as a scope binding named `"__scblock__<name>"` —
+first (most-derived) definition wins. The root ancestor is then rendered, and
+each `{% block %}` resolves to the collected override (or its own default). A
+block override may itself contain blocks, which is how a mid-level theme layer
+exposes new insertion points to the child.
+
+Macros are stored as scope bindings whose value is a macro map
+(`{ "__scribe_macro__": yes, "params": [...], "body": [...] }`). Definitions are
+*hoisted* into scope before a node list renders, so a macro can be called before
+its textual position. A call in an expression — `{{ name(args) }}` — is parsed
+as a postfix `(` after a name/member and dispatched to the macro; its output is
+marked safe so it isn't escaped a second time. `{% import "f" as ns %}` binds a
+**namespace** value (a list of macro bindings) that member access resolves into;
+`{% from "f" import a, b %}` binds the named macros directly.
+
+Includes read and render another file against the current context and scope; a
+`with { … }` clause pushes extra bindings for the partial's duration (popped
+afterward), and `only` renders the partial against just those bindings.
 
 Planned next:
 
-* **Multi-level inheritance** (a base that itself extends a grandparent).
-* **Macros:** `{% macro %}` / `{% import %}`.
 * **`for key, value in map`** once WFL exposes map-key iteration.
 * **Whitespace control** (`{{-` / `-}}`).
-* **More filters & functions:** `date`, `number_format`, `slice`, `batch`,
-  `range()`, `min`, `max`.
+* **More filters & functions:** `number_format`, `slice`, `batch`, `range()`,
+  `min`, `max`.
