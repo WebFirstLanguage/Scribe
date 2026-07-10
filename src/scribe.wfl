@@ -84,7 +84,165 @@ define action called scribe_to_text with parameters sc_v:
     check if sc_v is nothing:
         return ""
     end check
+    store sc_t as typeof of sc_v
+    check if sc_t is "List":
+        // An empty collection renders as empty text. WFL's default text form of
+        // an empty list is the two characters "[]"; Twig prints nothing for an
+        // empty collection, and emitting the bare string "[]" can even trip
+        // WFL's list-coercion of a "[]" result. Empty in, empty out.
+        check if (length of sc_v) is equal to 0:
+            return ""
+        end check
+    end check
+    check if sc_t is "Object":
+        // Unwrap a raw/"safe" marker so it concatenates as its inner text
+        // (e.g. inside `~`), instead of stringifying the wrapper map.
+        check if sc_v contains "__scribe_safe__":
+            return sc_v["__scribe_safe__"]
+        end check
+    end check
     return "" with sc_v
+end action
+
+
+// --- top-level text scanning (used by macro / include parsing)
+//
+// These split or search a tag's raw text while ignoring anything nested inside
+// quotes, parentheses, brackets, or braces — so a comma inside `f(a, b)` or a
+// keyword inside a quoted path is never mistaken for a top-level delimiter.
+
+// Split `sc_s` on top-level commas into a list of substrings.
+define action called scribe_split_top_commas with parameters sc_s:
+    store parts as []
+    store cur as ""
+    store depth as 0
+    store inq as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store ch as substring of sc_s and i and 1
+        check if inq is not "":
+            change cur to cur with ch
+            check if ch is inq:
+                change inq to ""
+            end check
+        otherwise:
+            check if (ch is "\"") or (ch is "'"):
+                change inq to ch
+                change cur to cur with ch
+            otherwise:
+                check if (ch is "(") or (ch is "{") or (ch is "["):
+                    change depth to depth plus 1
+                    change cur to cur with ch
+                otherwise:
+                    check if (ch is ")") or (ch is "}") or (ch is "]"):
+                        change depth to depth minus 1
+                        change cur to cur with ch
+                    otherwise:
+                        check if (ch is ",") and (depth is equal to 0):
+                            push with parts and cur
+                            change cur to ""
+                        otherwise:
+                            change cur to cur with ch
+                        end check
+                    end check
+                end check
+            end check
+        end check
+        change i to i plus 1
+    end repeat
+    push with parts and cur
+    return parts
+end action
+
+// Index of the first top-level occurrence of the single character `sc_ch`, or -1.
+define action called scribe_find_top_char with parameters sc_s and sc_ch:
+    store depth as 0
+    store inq as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store ch as substring of sc_s and i and 1
+        check if inq is not "":
+            check if ch is inq:
+                change inq to ""
+            end check
+        otherwise:
+            check if (ch is "\"") or (ch is "'"):
+                change inq to ch
+            otherwise:
+                check if (ch is "(") or (ch is "{") or (ch is "["):
+                    change depth to depth plus 1
+                otherwise:
+                    check if (ch is ")") or (ch is "}") or (ch is "]"):
+                        change depth to depth minus 1
+                    otherwise:
+                        check if (ch is sc_ch) and (depth is equal to 0):
+                            return i
+                        end check
+                    end check
+                end check
+            end check
+        end check
+        change i to i plus 1
+    end repeat
+    return 0 minus 1
+end action
+
+// Index of the first top-level occurrence of the multi-character `sc_kw`, or -1.
+define action called scribe_find_kw with parameters sc_s and sc_kw:
+    store depth as 0
+    store inq as ""
+    store i as 0
+    store n as length of sc_s
+    store kwlen as length of sc_kw
+    repeat while i is less than n:
+        store ch as substring of sc_s and i and 1
+        check if inq is not "":
+            check if ch is inq:
+                change inq to ""
+            end check
+        otherwise:
+            check if (ch is "\"") or (ch is "'"):
+                change inq to ch
+            otherwise:
+                check if (ch is "(") or (ch is "{") or (ch is "["):
+                    change depth to depth plus 1
+                otherwise:
+                    check if (ch is ")") or (ch is "}") or (ch is "]"):
+                        change depth to depth minus 1
+                    otherwise:
+                        check if depth is equal to 0:
+                            check if (i plus kwlen) is less than or equal to n:
+                                check if (substring of sc_s and i and kwlen) is sc_kw:
+                                    return i
+                                end check
+                            end check
+                        end check
+                    end check
+                end check
+            end check
+        end check
+        change i to i plus 1
+    end repeat
+    return 0 minus 1
+end action
+
+// Strip one layer of matching surrounding quotes from `sc_s`, if present.
+define action called scribe_strip_quotes with parameters sc_s:
+    store n as length of sc_s
+    check if n is less than 2:
+        return sc_s
+    end check
+    store first_ch as substring of sc_s and 0 and 1
+    store last_ch as substring of sc_s and (n minus 1) and 1
+    check if (first_ch is "\"") and (last_ch is "\""):
+        return substring of sc_s and 1 and (n minus 2)
+    end check
+    check if (first_ch is "'") and (last_ch is "'"):
+        return substring of sc_s and 1 and (n minus 2)
+    end check
+    return sc_s
 end action
 
 
@@ -429,6 +587,15 @@ define action called scribe_is_name with parameters sc_tk and sc_word:
     return no
 end action
 
+// Is this the synthetic end-of-tokens sentinel? Used so an argument loop with a
+// missing ")" stops cleanly instead of scanning past the end of the token list.
+define action called scribe_tok_is_end with parameters sc_tk:
+    check if sc_tk["t"] is "end":
+        return yes
+    end check
+    return no
+end action
+
 // --- variable lookup (overlay scope first, then context map)
 
 define action called scribe_lookup with parameters sc_name and sc_ctx and sc_scope:
@@ -452,6 +619,21 @@ end action
 define action called scribe_get_member with parameters sc_obj and sc_key:
     store sc_t as typeof of sc_obj
     check if sc_t is "Object":
+        // A macro namespace (from `{% import %}`) resolves members from its
+        // internal binding list rather than as ordinary map keys.
+        check if sc_obj contains "__scribe_ns__":
+            store nsb as sc_obj["binds"]
+            store ni as 0
+            store nn as length of nsb
+            repeat while ni is less than nn:
+                store nb as nsb[ni]
+                check if (nb["name"]) is sc_key:
+                    return nb["value"]
+                end check
+                change ni to ni plus 1
+            end repeat
+            return nothing
+        end check
         check if sc_obj contains sc_key:
             return sc_obj[sc_key]
         end check
@@ -572,6 +754,334 @@ define action called scribe_reverse_list with parameters sc_lst:
     return out
 end action
 
+// Remove every `<...>` HTML tag from `sc_s`, leaving the text content. An
+// unmatched `<` (e.g. "5 < 10") is not a tag: its literal text is preserved.
+define action called scribe_strip_tags with parameters sc_s:
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    store intag as no
+    store tag_start as 0
+    repeat while i is less than n:
+        store ch as substring of sc_s and i and 1
+        check if intag:
+            check if ch is ">":
+                change intag to no
+            end check
+        otherwise:
+            check if ch is "<":
+                change intag to yes
+                change tag_start to i
+            otherwise:
+                change out to out with ch
+            end check
+        end check
+        change i to i plus 1
+    end repeat
+    // A `<` that never closed was ordinary text, not a tag — keep it verbatim.
+    check if intag:
+        change out to out with (substring of sc_s and tag_start and (n minus tag_start))
+    end check
+    return out
+end action
+
+// Join a base URL and a path segment with exactly one slash. An empty base
+// yields a root-relative path.
+define action called scribe_join_url with parameters sc_base and sc_path:
+    store p as sc_path
+    check if (length of p) is greater than 0:
+        check if (substring of p and 0 and 1) is "/":
+            change p to substring of p and 1 and ((length of p) minus 1)
+        end check
+    end check
+    check if (length of sc_base) is equal to 0:
+        return "/" with p
+    end check
+    store b as sc_base
+    check if (length of b) is greater than 0:
+        check if (substring of b and ((length of b) minus 1) and 1) is "/":
+            change b to substring of b and 0 and ((length of b) minus 1)
+        end check
+    end check
+    return b with "/" with p
+end action
+
+// --- markdown (a small, safe subset): headings, paragraphs, unordered lists,
+// and inline **bold** / *italic* / `code` / [text](url). The source is HTML-
+// escaped first, so any markup in the input is neutralised before Scribe's own
+// tags are added — the result is trusted (safe) HTML.
+
+// Wrap text between paired `sc_delim` runs in open/close tags.
+define action called scribe_md_wrap with parameters sc_s and sc_delim and sc_open and sc_close:
+    store dlen as length of sc_delim
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store hit as scribe_index_from of sc_s and sc_delim and i
+        check if hit is less than 0:
+            change out to out with (substring of sc_s and i and (n minus i))
+            change i to n
+        otherwise:
+            store hit2 as scribe_index_from of sc_s and sc_delim and (hit plus dlen)
+            check if hit2 is less than 0:
+                change out to out with (substring of sc_s and i and (n minus i))
+                change i to n
+            otherwise:
+                change out to out with (substring of sc_s and i and (hit minus i))
+                store mid as substring of sc_s and (hit plus dlen) and (hit2 minus (hit plus dlen))
+                change out to out with sc_open with mid with sc_close
+                change i to hit2 plus dlen
+            end check
+        end check
+    end repeat
+    return out
+end action
+
+// Shield markdown-significant characters inside a code span so the later
+// emphasis and link passes can't reach into it and pair delimiters across span
+// boundaries. Restored verbatim by scribe_md_unshield at the end.
+define action called scribe_md_shield with parameters sc_s:
+    store t as sc_s
+    change t to scribe_replace_all of t and "*" and "%%SCSTAR%%"
+    change t to scribe_replace_all of t and "_" and "%%SCUND%%"
+    change t to scribe_replace_all of t and "[" and "%%SCLB%%"
+    change t to scribe_replace_all of t and "]" and "%%SCRB%%"
+    change t to scribe_replace_all of t and "(" and "%%SCLP%%"
+    change t to scribe_replace_all of t and ")" and "%%SCRP%%"
+    return t
+end action
+
+define action called scribe_md_unshield with parameters sc_s:
+    store t as sc_s
+    change t to scribe_replace_all of t and "%%SCSTAR%%" and "*"
+    change t to scribe_replace_all of t and "%%SCUND%%" and "_"
+    change t to scribe_replace_all of t and "%%SCLB%%" and "["
+    change t to scribe_replace_all of t and "%%SCRB%%" and "]"
+    change t to scribe_replace_all of t and "%%SCLP%%" and "("
+    change t to scribe_replace_all of t and "%%SCRP%%" and ")"
+    return t
+end action
+
+// Convert `code` spans to <code>…</code>, shielding their contents so nothing
+// inside them is later treated as emphasis or a link. Done as its own pass
+// (before emphasis) so a delimiter hidden in one span can't pair with one in
+// another span.
+define action called scribe_md_code with parameters sc_s:
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store hit as scribe_index_from of sc_s and "`" and i
+        check if hit is less than 0:
+            change out to out with (substring of sc_s and i and (n minus i))
+            change i to n
+        otherwise:
+            store hit2 as scribe_index_from of sc_s and "`" and (hit plus 1)
+            check if hit2 is less than 0:
+                change out to out with (substring of sc_s and i and (n minus i))
+                change i to n
+            otherwise:
+                change out to out with (substring of sc_s and i and (hit minus i))
+                store mid as substring of sc_s and (hit plus 1) and (hit2 minus (hit plus 1))
+                change out to out with "<code>" with (scribe_md_shield of mid) with "</code>"
+                change i to hit2 plus 1
+            end check
+        end check
+    end repeat
+    return out
+end action
+
+// Reject dangerous URL schemes in a markdown link so a `[click](javascript:…)`
+// can't smuggle script through the "safe" markdown filter. Whitespace is
+// stripped first so obfuscated schemes are still caught.
+define action called scribe_md_safe_url with parameters sc_url:
+    store compact as ""
+    store i as 0
+    store n as length of sc_url
+    repeat while i is less than n:
+        store ch as substring of sc_url and i and 1
+        check if scribe_negate of (scribe_is_space of ch):
+            change compact to compact with ch
+        end check
+        change i to i plus 1
+    end repeat
+    store low as tolowercase of compact
+    check if (indexof of low and "javascript:") is equal to 0:
+        return "#"
+    end check
+    check if (indexof of low and "vbscript:") is equal to 0:
+        return "#"
+    end check
+    check if (indexof of low and "data:") is equal to 0:
+        return "#"
+    end check
+    return sc_url
+end action
+
+// Turn [text](url) into an anchor. Runs on already-escaped text.
+define action called scribe_md_links with parameters sc_s:
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    repeat while i is less than n:
+        store ob as scribe_index_from of sc_s and "[" and i
+        check if ob is less than 0:
+            change out to out with (substring of sc_s and i and (n minus i))
+            change i to n
+        otherwise:
+            store cb as scribe_index_from of sc_s and "]" and (ob plus 1)
+            store op as 0 minus 1
+            check if cb is greater than or equal to 0:
+                check if (cb plus 1) is less than n:
+                    check if (substring of sc_s and (cb plus 1) and 1) is "(":
+                        change op to cb plus 1
+                    end check
+                end check
+            end check
+            check if op is less than 0:
+                change out to out with (substring of sc_s and i and ((ob plus 1) minus i))
+                change i to ob plus 1
+            otherwise:
+                store cp as scribe_index_from of sc_s and ")" and (op plus 1)
+                check if cp is less than 0:
+                    change out to out with (substring of sc_s and i and ((ob plus 1) minus i))
+                    change i to ob plus 1
+                otherwise:
+                    change out to out with (substring of sc_s and i and (ob minus i))
+                    store ltext as substring of sc_s and (ob plus 1) and (cb minus (ob plus 1))
+                    store lurl as substring of sc_s and (op plus 1) and (cp minus (op plus 1))
+                    change out to out with "<a href=\"" with (scribe_md_safe_url of lurl) with "\">" with ltext with "</a>"
+                    change i to cp plus 1
+                end check
+            end check
+        end check
+    end repeat
+    return out
+end action
+
+// Apply inline markdown to one line/paragraph of text.
+define action called scribe_md_inline with parameters sc_s:
+    store t as scribe_escape of sc_s
+    change t to scribe_md_code of t
+    change t to scribe_md_wrap of t and "**" and "<strong>" and "</strong>"
+    change t to scribe_md_wrap of t and "__" and "<strong>" and "</strong>"
+    change t to scribe_md_wrap of t and "*" and "<em>" and "</em>"
+    change t to scribe_md_links of t
+    change t to scribe_md_unshield of t
+    return t
+end action
+
+// Heading level (1..6) of a line, or 0 if it is not an ATX heading.
+define action called scribe_md_heading_level with parameters sc_s:
+    store cnt as 0
+    store n as length of sc_s
+    repeat while cnt is less than n:
+        check if (substring of sc_s and cnt and 1) is "#":
+            change cnt to cnt plus 1
+        otherwise:
+            break
+        end check
+    end repeat
+    check if cnt is equal to 0:
+        return 0
+    end check
+    check if cnt is greater than 6:
+        return 0
+    end check
+    check if cnt is greater than or equal to n:
+        return 0
+    end check
+    check if (substring of sc_s and cnt and 1) is " ":
+        return cnt
+    end check
+    return 0
+end action
+
+// Is this line an unordered-list item ("- " or "* ")?
+define action called scribe_md_is_li with parameters sc_s:
+    check if (length of sc_s) is less than 2:
+        return no
+    end check
+    store pre as substring of sc_s and 0 and 2
+    check if pre is "- ":
+        return yes
+    end check
+    check if pre is "* ":
+        return yes
+    end check
+    return no
+end action
+
+// Render a markdown subset to trusted (safe-marked) HTML.
+define action called scribe_markdown with parameters sc_src:
+    store lines as split sc_src by "\n"
+    store out as ""
+    store in_list as no
+    store para as ""
+    for each raw in lines:
+        store line as raw
+        store ll as length of line
+        check if ll is greater than 0:
+            check if (substring of line and (ll minus 1) and 1) is "\r":
+                change line to substring of line and 0 and (ll minus 1)
+            end check
+        end check
+        store trimmed as trim of line
+        check if (length of trimmed) is equal to 0:
+            check if (length of para) is greater than 0:
+                change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                change para to ""
+            end check
+            check if in_list:
+                change out to out with "</ul>"
+                change in_list to no
+            end check
+        otherwise:
+            store hlevel as scribe_md_heading_level of trimmed
+            check if hlevel is greater than 0:
+                check if (length of para) is greater than 0:
+                    change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                    change para to ""
+                end check
+                check if in_list:
+                    change out to out with "</ul>"
+                    change in_list to no
+                end check
+                store htext as trim of (substring of trimmed and (hlevel plus 1) and ((length of trimmed) minus (hlevel plus 1)))
+                store htag as "h" with hlevel
+                change out to out with "<" with htag with ">" with (scribe_md_inline of htext) with "</" with htag with ">"
+            otherwise:
+                check if scribe_md_is_li of trimmed:
+                    check if (length of para) is greater than 0:
+                        change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                        change para to ""
+                    end check
+                    check if scribe_negate of in_list:
+                        change out to out with "<ul>"
+                        change in_list to yes
+                    end check
+                    store itext as trim of (substring of trimmed and 2 and ((length of trimmed) minus 2))
+                    change out to out with "<li>" with (scribe_md_inline of itext) with "</li>"
+                otherwise:
+                    check if (length of para) is greater than 0:
+                        change para to para with " " with trimmed
+                    otherwise:
+                        change para to trimmed
+                    end check
+                end check
+            end check
+        end check
+    end for
+    check if (length of para) is greater than 0:
+        change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+    end check
+    check if in_list:
+        change out to out with "</ul>"
+    end check
+    return scribe_raw_marker of out
+end action
+
 // Apply a named filter to a value. `args` is a list of already-evaluated args.
 define action called scribe_apply_filter with parameters sc_fname and sc_val and sc_filter_args:
     store argc as length of sc_filter_args
@@ -665,6 +1175,63 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
     check if sc_fname is "e":
         return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val))
     end check
+    check if sc_fname is "truncate":
+        store txt as scribe_to_text of sc_val
+        store lim as length of txt
+        check if argc is greater than 0:
+            change lim to sc_filter_args[0]
+        end check
+        check if lim is less than 0:
+            change lim to 0
+        end check
+        store suffix as "..."
+        check if argc is greater than or equal to 2:
+            change suffix to scribe_to_text of (sc_filter_args[1])
+        end check
+        check if (length of txt) is less than or equal to lim:
+            return txt
+        end check
+        return (substring of txt and 0 and lim) with suffix
+    end check
+    check if sc_fname is "striptags":
+        return scribe_strip_tags of (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "date":
+        store fmt as ""
+        check if argc is greater than 0:
+            change fmt to scribe_to_text of (sc_filter_args[0])
+        end check
+        store dvt as typeof of sc_val
+        check if dvt is "DateTime":
+            check if (length of fmt) is equal to 0:
+                change fmt to "%Y-%m-%d %H:%M:%S"
+            end check
+            return format_datetime of sc_val and fmt
+        end check
+        check if dvt is "Date":
+            check if (length of fmt) is equal to 0:
+                change fmt to "%Y-%m-%d"
+            end check
+            return format_date of sc_val and fmt
+        end check
+        check if dvt is "Time":
+            check if (length of fmt) is equal to 0:
+                change fmt to "%H:%M:%S"
+            end check
+            return format_time of sc_val and fmt
+        end check
+        return scribe_to_text of sc_val
+    end check
+    check if (sc_fname is "asset") or (sc_fname is "url"):
+        store base as ""
+        check if argc is greater than 0:
+            change base to scribe_to_text of (sc_filter_args[0])
+        end check
+        return scribe_join_url of base and (scribe_to_text of sc_val)
+    end check
+    check if sc_fname is "markdown":
+        return scribe_markdown of (scribe_to_text of sc_val)
+    end check
     return "[Scribe error: unknown filter '" with sc_fname with "']"
 end action
 
@@ -709,10 +1276,34 @@ define action called scribe_p_primary with parameters sc_toks and sc_pos and sc_
         end check
         store curval as scribe_lookup of tv and sc_ctx and sc_scope
         change np to sc_pos plus 1
-        repeat while scribe_is_op of (sc_toks[np]) and ".":
-            store seg as sc_toks[np plus 1]
-            change curval to scribe_get_member of curval and (seg["v"])
-            change np to np plus 2
+        store postfix as yes
+        repeat while postfix:
+            check if scribe_is_op of (sc_toks[np]) and ".":
+                store seg as sc_toks[np plus 1]
+                change curval to scribe_get_member of curval and (seg["v"])
+                change np to np plus 2
+            otherwise:
+                check if scribe_is_op of (sc_toks[np]) and "(":
+                    // Function call — evaluate the argument list and invoke the
+                    // resolved value as a macro.
+                    store cargs as []
+                    change np to np plus 1
+                    repeat while (scribe_negate of (scribe_is_op of (sc_toks[np]) and ")")) and (scribe_negate of (scribe_tok_is_end of (sc_toks[np]))):
+                        store ares as scribe_p_or of sc_toks and np and sc_ctx and sc_scope
+                        push with cargs and (ares["val"])
+                        change np to ares["pos"]
+                        check if scribe_is_op of (sc_toks[np]) and ",":
+                            change np to np plus 1
+                        end check
+                    end repeat
+                    check if scribe_is_op of (sc_toks[np]) and ")":
+                        change np to np plus 1
+                    end check
+                    change curval to scribe_call_macro of curval and cargs and sc_ctx and sc_scope
+                otherwise:
+                    change postfix to no
+                end check
+            end check
         end repeat
         return scribe_res of curval and np
     end check
@@ -731,7 +1322,7 @@ define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_c
         change fargs to []
         check if scribe_is_op of (sc_toks[np]) and "(":
             change np to np plus 1
-            repeat while scribe_negate of (scribe_is_op of (sc_toks[np]) and ")"):
+            repeat while (scribe_negate of (scribe_is_op of (sc_toks[np]) and ")")) and (scribe_negate of (scribe_tok_is_end of (sc_toks[np]))):
                 store ares as scribe_p_or of sc_toks and np and sc_ctx and sc_scope
                 push with fargs and (ares["val"])
                 change np to ares["pos"]
@@ -739,7 +1330,9 @@ define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_c
                     change np to np plus 1
                 end check
             end repeat
-            change np to np plus 1
+            check if scribe_is_op of (sc_toks[np]) and ")":
+                change np to np plus 1
+            end check
         end check
         change curval to scribe_apply_filter of sc_fname and curval and fargs
     end repeat
@@ -921,14 +1514,6 @@ define action called scribe_set_node with parameters sc_name and sc_expr:
     return m
 end action
 
-define action called scribe_include_node with parameters sc_expr:
-    create map m:
-        "kind" is "include"
-        "expr" is sc_expr
-    end map
-    return m
-end action
-
 define action called scribe_extends_node with parameters sc_expr:
     create map m:
         "kind" is "extends"
@@ -1058,7 +1643,7 @@ define action called scribe_parse_seq with parameters sc_toks and sc_pos and sc_
                                 change p to p plus 1
                             otherwise:
                                 check if firstword is "include":
-                                    push with sc_nodes and (scribe_include_node of (scribe_after_word of sc_tagsrc and "include"))
+                                    push with sc_nodes and (scribe_parse_include of sc_tagsrc)
                                     change p to p plus 1
                                 otherwise:
                                     check if firstword is "extends":
@@ -1070,8 +1655,24 @@ define action called scribe_parse_seq with parameters sc_toks and sc_pos and sc_
                                             push with sc_nodes and (res_block["node"])
                                             change p to res_block["pos"]
                                         otherwise:
-                                            push with sc_nodes and (scribe_text_node of ("[Scribe error: unknown tag '" with firstword with "']"))
-                                            change p to p plus 1
+                                            check if firstword is "macro":
+                                                store res_macro as scribe_parse_macro of sc_toks and (p plus 1) and sc_tagsrc
+                                                push with sc_nodes and (res_macro["node"])
+                                                change p to res_macro["pos"]
+                                            otherwise:
+                                                check if firstword is "import":
+                                                    push with sc_nodes and (scribe_parse_import of sc_tagsrc)
+                                                    change p to p plus 1
+                                                otherwise:
+                                                    check if firstword is "from":
+                                                        push with sc_nodes and (scribe_parse_from of sc_tagsrc)
+                                                        change p to p plus 1
+                                                    otherwise:
+                                                        push with sc_nodes and (scribe_text_node of ("[Scribe error: unknown tag '" with firstword with "']"))
+                                                        change p to p plus 1
+                                                    end check
+                                                end check
+                                            end check
                                         end check
                                     end check
                                 end check
@@ -1204,6 +1805,163 @@ define action called scribe_parse_block with parameters sc_toks and sc_pos and s
     return result
 end action
 
+// Parse a `{ key: expr, key2: expr2 }` clause into a list of pairs
+// { "key": <name>, "expr": <value-expression-source> }. Keys may be bare names
+// or quoted strings; values are expression source, re-evaluated at render time.
+define action called scribe_parse_map_pairs with parameters sc_s:
+    store body as trim of sc_s
+    store bl as length of body
+    check if bl is greater than or equal to 1:
+        check if (substring of body and 0 and 1) is "{":
+            check if (substring of body and (bl minus 1) and 1) is "}":
+                change body to substring of body and 1 and (bl minus 2)
+            otherwise:
+                change body to substring of body and 1 and (bl minus 1)
+            end check
+        end check
+    end check
+    store pairs as []
+    store parts as scribe_split_top_commas of body
+    for each part in parts:
+        store tp as trim of part
+        check if (length of tp) is greater than 0:
+            store cpos as scribe_find_top_char of tp and ":"
+            check if cpos is greater than or equal to 0:
+                store rawkey as trim of (substring of tp and 0 and cpos)
+                store key as scribe_strip_quotes of rawkey
+                store vexpr as trim of (substring of tp and (cpos plus 1) and ((length of tp) minus (cpos plus 1)))
+                create map pr:
+                    "key" is key
+                    "expr" is vexpr
+                end map
+                push with pairs and pr
+            end check
+        end check
+    end for
+    return pairs
+end action
+
+// include EXPR [with { ... }] [only]
+define action called scribe_parse_include with parameters sc_tagsrc:
+    store rest as scribe_after_word of sc_tagsrc and "include"
+    store path_expr as rest
+    store with_pairs as []
+    store only_flag as no
+    store wpos as scribe_find_kw of rest and " with "
+    check if wpos is greater than or equal to 0:
+        change path_expr to trim of (substring of rest and 0 and wpos)
+        store wtail_start as wpos plus 6
+        store wclause as trim of (substring of rest and wtail_start and ((length of rest) minus wtail_start))
+        store opos as scribe_find_kw of wclause and " only"
+        check if opos is greater than or equal to 0:
+            change only_flag to yes
+            change wclause to trim of (substring of wclause and 0 and opos)
+        end check
+        change with_pairs to scribe_parse_map_pairs of wclause
+    otherwise:
+        store opos2 as scribe_find_kw of rest and " only"
+        check if opos2 is greater than or equal to 0:
+            change only_flag to yes
+            change path_expr to trim of (substring of rest and 0 and opos2)
+        end check
+    end check
+    create map node:
+        "kind" is "include"
+        "expr" is (trim of path_expr)
+        "with_pairs" is with_pairs
+        "only" is only_flag
+    end map
+    return node
+end action
+
+// macro NAME(p1, p2, ...) ... endmacro
+define action called scribe_parse_macro with parameters sc_toks and sc_pos and sc_tagsrc:
+    store after as scribe_after_word of sc_tagsrc and "macro"
+    store paren as indexof of after and "("
+    store mname as ""
+    store params as []
+    check if paren is less than 0:
+        change mname to trim of after
+    otherwise:
+        change mname to trim of (substring of after and 0 and paren)
+        store close_idx as indexof of after and ")"
+        check if close_idx is less than 0:
+            change close_idx to length of after
+        end check
+        store inner as substring of after and (paren plus 1) and (close_idx minus (paren plus 1))
+        store raw_params as scribe_split_top_commas of inner
+        for each rp in raw_params:
+            store tp as trim of rp
+            check if (length of tp) is greater than 0:
+                push with params and tp
+            end check
+        end for
+    end check
+    store macro_stops as ["endmacro"]
+    store seq as scribe_parse_seq of sc_toks and sc_pos and macro_stops
+    store p as seq["pos"]
+    store stopmark as seq["stopmark"]
+    check if stopmark is "endmacro":
+        change p to p plus 1
+    end check
+    create map node:
+        "kind" is "macro"
+        "name" is mname
+        "params" is params
+        "body" is seq["nodes"]
+    end map
+    create map result:
+        "node" is node
+        "pos" is p
+    end map
+    return result
+end action
+
+// import EXPR as ALIAS
+define action called scribe_parse_import with parameters sc_tagsrc:
+    store rest as scribe_after_word of sc_tagsrc and "import"
+    store apos as scribe_find_kw of rest and " as "
+    store path_expr as rest
+    store alias as ""
+    check if apos is greater than or equal to 0:
+        change path_expr to trim of (substring of rest and 0 and apos)
+        store atail as apos plus 4
+        change alias to trim of (substring of rest and atail and ((length of rest) minus atail))
+    end check
+    create map node:
+        "kind" is "import"
+        "path" is (trim of path_expr)
+        "alias" is alias
+    end map
+    return node
+end action
+
+// from EXPR import name1, name2, ...
+define action called scribe_parse_from with parameters sc_tagsrc:
+    store rest as scribe_after_word of sc_tagsrc and "from"
+    store ipos as scribe_find_kw of rest and " import "
+    store path_expr as rest
+    store names as []
+    check if ipos is greater than or equal to 0:
+        change path_expr to trim of (substring of rest and 0 and ipos)
+        store itail as ipos plus 8
+        store namestr as substring of rest and itail and ((length of rest) minus itail)
+        store raw_names as scribe_split_top_commas of namestr
+        for each rn in raw_names:
+            store tn as trim of rn
+            check if (length of tn) is greater than 0:
+                push with names and tn
+            end check
+        end for
+    end check
+    create map node:
+        "kind" is "from"
+        "path" is (trim of path_expr)
+        "names" is names
+    end map
+    return node
+end action
+
 // Parse the whole token list into a node list.
 define action called scribe_parse with parameters sc_toks:
     store no_stops as []
@@ -1259,6 +2017,10 @@ end action
 
 define action called scribe_render_nodes with parameters sc_nodes and sc_ctx and sc_scope:
     store out as ""
+    // Hoist macro/import/from definitions so they can be used before (or after)
+    // their textual position, then walk the nodes. Definition nodes themselves
+    // emit no output.
+    store hoisted as scribe_hoist_defs of sc_nodes and sc_ctx and sc_scope
     for each sc_node in sc_nodes:
         store knd as sc_node["kind"]
         check if knd is "text":
@@ -1311,12 +2073,47 @@ define action called scribe_read_file with parameters sc_path:
     return sc_data
 end action
 
-// {% include "path" %} — render another template with the current context.
+// {% include "path" [with { ... }] [only] %} — render another template.
+//
+// By default the partial shares the current context and scope. A `with { ... }`
+// clause adds extra variables (evaluated in the caller's scope) on top; `only`
+// isolates the partial so it sees ONLY the with-variables — removing the
+// set-before-include dance for passing a small, explicit context to a partial.
 define action called scribe_render_include with parameters sc_node and sc_ctx and sc_scope:
     store sc_path as scribe_to_text of (scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope)
     store sc_src as scribe_read_file of sc_path
     store inc_toks as scribe_lex of sc_src
     store inc_nodes as scribe_parse of inc_toks
+    store with_pairs as sc_node["with_pairs"]
+    store only_flag as sc_node["only"]
+    check if only_flag:
+        // Isolated render: a fresh scope holding just the with-variables, and an
+        // empty context so nothing leaks in from the caller.
+        store inc_scope as []
+        check if (length of with_pairs) is greater than 0:
+            for each pr in with_pairs:
+                store pv as scribe_eval_expr of (pr["expr"]) and sc_ctx and sc_scope
+                push with inc_scope and (scribe_binding of (pr["key"]) and pv)
+            end for
+        end check
+        create map empty_ctx:
+        end map
+        return scribe_render_nodes of inc_nodes and empty_ctx and inc_scope
+    end check
+    check if (length of with_pairs) is greater than 0:
+        // Shared render with extra variables pushed for the duration of the
+        // partial, then popped so they don't leak back to the caller.
+        store save_depth as length of sc_scope
+        for each pr in with_pairs:
+            store pv as scribe_eval_expr of (pr["expr"]) and sc_ctx and sc_scope
+            push with sc_scope and (scribe_binding of (pr["key"]) and pv)
+        end for
+        store out as scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
+        repeat while (length of sc_scope) is greater than save_depth:
+            store discard as pop of sc_scope
+        end repeat
+        return out
+    end check
     return scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
 end action
 
@@ -1341,12 +2138,184 @@ define action called scribe_find_extends with parameters sc_nodes:
     return nothing
 end action
 
-// Bind each top-level {% block %} of a child as a "__scblock__<name>" override.
+// Is a binding named `sc_name` already present in the overlay scope?
+define action called scribe_scope_has with parameters sc_name and sc_scope:
+    store sc_i as (length of sc_scope) minus 1
+    repeat while sc_i is greater than or equal to 0:
+        store sc_b as sc_scope[sc_i]
+        check if sc_b["name"] is sc_name:
+            return yes
+        end check
+        change sc_i to sc_i minus 1
+    end repeat
+    return no
+end action
+
+// Bind each top-level {% block %} of a template as a "__scblock__<name>"
+// override. Walking the extends chain from the leaf child upward, the first
+// (most-derived) definition of a block wins, so an already-bound block name is
+// left untouched — this is what makes multi-level inheritance layer correctly.
 define action called scribe_collect_blocks with parameters sc_nodes and sc_scope:
     for each sc_node in sc_nodes:
         check if (sc_node["kind"]) is "block":
             store bkey as "__scblock__" with (sc_node["name"])
-            push with sc_scope and (scribe_binding of bkey and (sc_node["body"]))
+            check if scribe_negate of (scribe_scope_has of bkey and sc_scope):
+                push with sc_scope and (scribe_binding of bkey and (sc_node["body"]))
+            end check
+        end check
+    end for
+    return yes
+end action
+
+
+// ----------------------------------------------------------------------------
+// Section 5b — macros (reusable, parameterised template fragments)
+//
+// A {% macro name(a, b) %}…{% endmacro %} is stored as a scope binding whose
+// value is a macro map { "__scribe_macro__": yes, "params": [...], "body": [...] }.
+// Calling it in an expression — {{ name(x, y) }} — renders the body with the
+// arguments bound to the parameters. Macro output is trusted (safe) HTML, since
+// each interpolation inside the macro is already escaped on its own.
+//
+// {% import "file" as ns %} binds a namespace whose members are that file's
+// macros ({{ ns.name(...) }}); {% from "file" import a, b %} binds them directly.
+// ----------------------------------------------------------------------------
+
+// Build the stored value for a macro definition node.
+define action called scribe_macro_value with parameters sc_node:
+    create map m:
+        "__scribe_macro__" is yes
+        "params" is (sc_node["params"])
+        "body" is (sc_node["body"])
+    end map
+    return m
+end action
+
+// Is `sc_v` a macro value?
+define action called scribe_is_macro with parameters sc_v:
+    check if (typeof of sc_v) is "Object":
+        check if sc_v contains "__scribe_macro__":
+            return yes
+        end check
+    end check
+    return no
+end action
+
+// Call a macro value with a list of already-evaluated arguments. Missing
+// arguments bind to nothing; extra arguments are ignored. Returns safe HTML.
+define action called scribe_call_macro with parameters sc_macro and sc_args and sc_ctx and sc_scope:
+    check if scribe_negate of (scribe_is_macro of sc_macro):
+        return "[Scribe error: value is not callable]"
+    end check
+    store params as sc_macro["params"]
+    store body as sc_macro["body"]
+    store save_depth as length of sc_scope
+    // An imported macro carries its home-file nodes so it can call sibling
+    // macros defined alongside it, even if only this one was imported.
+    check if sc_macro contains "home":
+        store hsib as scribe_hoist_defs of (sc_macro["home"]) and sc_ctx and sc_scope
+    end check
+    store pi as 0
+    store pc as length of params
+    repeat while pi is less than pc:
+        store pv as nothing
+        check if pi is less than (length of sc_args):
+            change pv to sc_args[pi]
+        end check
+        push with sc_scope and (scribe_binding of (params[pi]) and pv)
+        change pi to pi plus 1
+    end repeat
+    store rendered as scribe_render_nodes of body and sc_ctx and sc_scope
+    repeat while (length of sc_scope) is greater than save_depth:
+        store discard as pop of sc_scope
+    end repeat
+    return scribe_raw_marker of rendered
+end action
+
+// Collect the top-level macro definitions of a parsed template into a list of
+// bindings { "name": ..., "value": <macro value> }. Each value carries the whole
+// node list as its "home" so it can reach sibling macros when called.
+define action called scribe_macro_bindings with parameters sc_nodes:
+    store binds as []
+    for each nd in sc_nodes:
+        check if (nd["kind"]) is "macro":
+            create map mv:
+                "__scribe_macro__" is yes
+                "params" is (nd["params"])
+                "body" is (nd["body"])
+                "home" is sc_nodes
+            end map
+            push with binds and (scribe_binding of (nd["name"]) and mv)
+        end check
+    end for
+    return binds
+end action
+
+// Execute an {% import "file" as ns %}: bind `ns` to a namespace of the file's
+// macros. Idempotent — a re-import of the same alias is skipped (so an import in
+// a loop body does not re-read the file each pass).
+define action called scribe_do_import with parameters sc_node and sc_ctx and sc_scope:
+    store alias as sc_node["alias"]
+    check if scribe_scope_has of alias and sc_scope:
+        return yes
+    end check
+    store path as scribe_to_text of (scribe_eval_expr of (sc_node["path"]) and sc_ctx and sc_scope)
+    store src as scribe_read_file of path
+    store nds as scribe_parse of (scribe_lex of src)
+    store binds as scribe_macro_bindings of nds
+    create map nsval:
+        "__scribe_ns__" is yes
+        "binds" is binds
+    end map
+    push with sc_scope and (scribe_binding of alias and nsval)
+    return yes
+end action
+
+// Execute a {% from "file" import a, b %}: bind the named macros directly.
+// Idempotent: skip only when the first name is already bound *as a macro* (i.e.
+// a prior identical import), so a collision with an unrelated variable — a loop
+// variable, say — doesn't silently drop the remaining imports.
+define action called scribe_do_from with parameters sc_node and sc_ctx and sc_scope:
+    store names as sc_node["names"]
+    check if (length of names) is greater than 0:
+        store existing as scribe_lookup of (names[0]) and sc_ctx and sc_scope
+        check if scribe_is_macro of existing:
+            return yes
+        end check
+    end check
+    store path as scribe_to_text of (scribe_eval_expr of (sc_node["path"]) and sc_ctx and sc_scope)
+    store src as scribe_read_file of path
+    store nds as scribe_parse of (scribe_lex of src)
+    store binds as scribe_macro_bindings of nds
+    for each want in names:
+        for each nb in binds:
+            check if (nb["name"]) is want:
+                push with sc_scope and (scribe_binding of want and (nb["value"]))
+            end check
+        end for
+    end for
+    return yes
+end action
+
+// Hoist definitions (macros, imports, from-imports) of a node list into scope
+// before rendering it, so a macro can be called before its textual definition
+// and imported macros are available throughout the template.
+define action called scribe_hoist_defs with parameters sc_nodes and sc_ctx and sc_scope:
+    for each nd in sc_nodes:
+        store k as nd["kind"]
+        check if k is "macro":
+            store mkey as nd["name"]
+            check if scribe_negate of (scribe_scope_has of mkey and sc_scope):
+                push with sc_scope and (scribe_binding of mkey and (scribe_macro_value of nd))
+            end check
+        otherwise:
+            check if k is "import":
+                store ig as scribe_do_import of nd and sc_ctx and sc_scope
+            otherwise:
+                check if k is "from":
+                    store ig2 as scribe_do_from of nd and sc_ctx and sc_scope
+                end check
+            end check
         end check
     end for
     return yes
@@ -1358,17 +2327,36 @@ end action
 // ----------------------------------------------------------------------------
 
 // Render already-parsed nodes, honouring {% extends %} for inheritance.
+//
+// Inheritance can be many levels deep (a child extends a base that itself
+// extends a grandparent). We walk the whole chain from the leaf upward,
+// collecting each template's block overrides (most-derived wins), until we
+// reach the root ancestor — the template whose own text is the page skeleton.
+// Rendering that root resolves every {% block %} against the collected overrides.
 define action called scribe_render_root with parameters sc_nodes and sc_ctx and sc_scope:
-    store ext as scribe_find_extends of sc_nodes
-    check if ext is nothing:
-        return scribe_render_nodes of sc_nodes and sc_ctx and sc_scope
-    end check
-    store ignore as scribe_collect_blocks of sc_nodes and sc_scope
-    store parent_path as scribe_to_text of (scribe_eval_expr of ext and sc_ctx and sc_scope)
-    store parent_src as scribe_read_file of parent_path
-    store parent_toks as scribe_lex of parent_src
-    store parent_nodes as scribe_parse of parent_toks
-    return scribe_render_nodes of parent_nodes and sc_ctx and sc_scope
+    store cur_nodes as sc_nodes
+    store climbing as yes
+    store guard as 0
+    repeat while climbing:
+        // Make each level's macros/imports available (leaf and intermediates),
+        // so a macro defined in a child can be used inside an overridden block.
+        store hchain as scribe_hoist_defs of cur_nodes and sc_ctx and sc_scope
+        store ext as scribe_find_extends of cur_nodes
+        check if ext is nothing:
+            change climbing to no
+        otherwise:
+            store ignore as scribe_collect_blocks of cur_nodes and sc_scope
+            store parent_path as scribe_to_text of (scribe_eval_expr of ext and sc_ctx and sc_scope)
+            store parent_src as scribe_read_file of parent_path
+            store parent_toks as scribe_lex of parent_src
+            change cur_nodes to scribe_parse of parent_toks
+            change guard to guard plus 1
+            check if guard is greater than 50:
+                change climbing to no
+            end check
+        end check
+    end repeat
+    return scribe_render_nodes of cur_nodes and sc_ctx and sc_scope
 end action
 
 // Render a template string against a context map. Returns the output text.

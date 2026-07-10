@@ -1,0 +1,35 @@
+// Scribe example — "theme layering" with the ecosystem features:
+//   * multi-level {% extends %} (child -> blog shell -> base skeleton)
+//   * {% import %} of a macro library for DRY components
+//   * {% include ... with { ... } %} to pass a scoped context to a partial
+//   * the markdown / asset / url filters
+//
+// Run from the repo root so the relative template paths resolve:
+//     examples/run.sh examples/theme.wfl /path/to/wfl
+
+include from "../src/scribe.wfl"
+
+store tag_list as ["engines", "history"]
+create map ctx:
+    "heading" is "Notes on <Engines>"
+    "post_body" is "The **Analytical Engine** was never built.
+
+See the [design](/design) for details."
+    "tags" is tag_list
+end map
+
+// The child page: it layers on top of the blog shell (which itself extends the
+// base skeleton), imports the component macros, and fills in the content block.
+store child as "{% extends \"examples/templates/theme_blog.html\" %}
+{% import \"examples/templates/components.html\" as ui %}
+{% block title %}Home{% endblock %}
+{% block content %}
+    <h1>{{ heading }}</h1>
+    {{ post_body | markdown }}
+    {{ ui.figure(\"img/engine.png\", \"Babbage's engine\") }}
+    <p>{{ ui.badge(\"new\") }}</p>
+    <nav>{% for t in tags %}{% include \"examples/templates/tag.html\" with { name: t } only %}{% endfor %}</nav>
+{% endblock %}"
+
+store html as scribe_render of child and ctx
+display html

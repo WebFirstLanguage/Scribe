@@ -226,3 +226,187 @@ describe "include and inheritance":
     end test
 
 end describe
+
+describe "multi-level inheritance":
+
+    test "a base extends a grandparent across three levels":
+        open file at "build/_sc_grand.tmp" for writing as fg
+        wait for write content "<h>{% block head %}gh{% endblock %}</h><b>{% block body %}gb{% endblock %}</b>" into fg
+        close file fg
+        open file at "build/_sc_mid.tmp" for writing as fm
+        wait for write content "{% extends 'build/_sc_grand.tmp' %}{% block body %}<m>{% block content %}mc{% endblock %}</m>{% endblock %}" into fm
+        close file fm
+        store child as "{% extends 'build/_sc_mid.tmp' %}{% block content %}CC{% endblock %}"
+        store got as scribe_render of child and t_ctx
+        expect got to equal "<h>gh</h><b><m>CC</m></b>"
+    end test
+
+    test "the most-derived override wins over an intermediate one":
+        open file at "build/_sc_g2.tmp" for writing as fg2
+        wait for write content "{% block t %}base{% endblock %}" into fg2
+        close file fg2
+        open file at "build/_sc_m2.tmp" for writing as fm2
+        wait for write content "{% extends 'build/_sc_g2.tmp' %}{% block t %}mid{% endblock %}" into fm2
+        close file fm2
+        store child as "{% extends 'build/_sc_m2.tmp' %}{% block t %}leaf{% endblock %}"
+        store got as scribe_render of child and t_ctx
+        expect got to equal "leaf"
+    end test
+
+end describe
+
+describe "macros":
+
+    test "define and call a macro, calling before its definition":
+        store t as "{{ hi('Sam') }}{% macro hi(n) %}Hi {{ n }}!{% endmacro %}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Hi Sam!"
+    end test
+
+    test "macro output is trusted but its interpolations are escaped":
+        store t as "{% macro tag(v) %}<i>{{ v }}</i>{% endmacro %}{{ tag('a & b') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "<i>a &amp; b</i>"
+    end test
+
+    test "a macro with a missing argument binds it to nothing":
+        store t as "{% macro pair(a, b) %}{{ a }}-{{ b }}{% endmacro %}{{ pair('x') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "x-"
+    end test
+
+    test "import a macro namespace from a file":
+        open file at "build/_sc_forms.tmp" for writing as ff
+        wait for write content "{% macro field(n) %}<input name=\"{{ n }}\">{% endmacro %}" into ff
+        close file ff
+        store t as "{% import 'build/_sc_forms.tmp' as forms %}{{ forms.field('email') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "<input name=\"email\">"
+    end test
+
+    test "from import binds a macro by name":
+        open file at "build/_sc_forms2.tmp" for writing as ff2
+        wait for write content "{% macro field(n) %}[{{ n }}]{% endmacro %}" into ff2
+        close file ff2
+        store t as "{% from 'build/_sc_forms2.tmp' import field %}{{ field('x') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "[x]"
+    end test
+
+    test "a call with a missing closing paren fails gracefully, not fatally":
+        store t as "{% macro hi(n) %}Hi {{ n }}{% endmacro %}{{ hi('a' }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Hi a"
+    end test
+
+    test "an imported macro can call a sibling in its home file":
+        open file at "build/_sc_lib.tmp" for writing as fl
+        wait for write content "{% macro wrap(x) %}[{{ x }}]{% endmacro %}{% macro shout(x) %}{{ wrap(x) | upper }}{% endmacro %}" into fl
+        close file fl
+        store t as "{% from 'build/_sc_lib.tmp' import shout %}{{ shout('hi') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "[HI]"
+    end test
+
+end describe
+
+describe "scoped includes":
+
+    test "include with an explicit scoped context":
+        open file at "build/_sc_badge.tmp" for writing as fbg
+        wait for write content "<b class=\"{{ cls }}\">{{ label }}</b>" into fbg
+        close file fbg
+        store got as scribe_render of "{% include 'build/_sc_badge.tmp' with { cls: 'hot', label: 'NEW' } %}" and t_ctx
+        expect got to equal "<b class=\"hot\">NEW</b>"
+    end test
+
+    test "include with only isolates the partial from the caller context":
+        open file at "build/_sc_badge2.tmp" for writing as fbg2
+        wait for write content "[{{ user.name }}|{{ label }}]" into fbg2
+        close file fbg2
+        store got as scribe_render of "{% include 'build/_sc_badge2.tmp' with { label: 'L' } only %}" and t_ctx
+        expect got to equal "[|L]"
+    end test
+
+end describe
+
+describe "new filters":
+
+    test "truncate with the default suffix":
+        store got as scribe_render of "{{ 'The quick brown fox' | truncate(9) }}" and t_ctx
+        expect got to equal "The quick..."
+    end test
+
+    test "truncate with a custom suffix and short-string passthrough":
+        store got as scribe_render of "{{ 'hi' | truncate(9, '') }}/{{ 'abcdefghij' | truncate(5, '!') }}" and t_ctx
+        expect got to equal "hi/abcde!"
+    end test
+
+    test "striptags removes html markup":
+        store got as scribe_render of "{{ '<b>bold</b> text' | striptags }}" and t_ctx
+        expect got to equal "bold text"
+    end test
+
+    test "striptags keeps an unmatched < as literal text":
+        store got as scribe_render of "{{ '5 < 10 apples' | striptags }}" and t_ctx
+        expect got to equal "5 &lt; 10 apples"
+    end test
+
+    test "asset builds a root-relative path":
+        store got as scribe_render of "{{ 'css/app.css' | asset }}" and t_ctx
+        expect got to equal "/css/app.css"
+    end test
+
+    test "asset joins a base url without doubling the slash":
+        store got as scribe_render of "{{ '/js/app.js' | asset('https://cdn.example.com/') }}" and t_ctx
+        expect got to equal "https://cdn.example.com/js/app.js"
+    end test
+
+    test "url builds a root-relative route":
+        store got as scribe_render of "{{ 'about' | url }}" and t_ctx
+        expect got to equal "/about"
+    end test
+
+    test "date formats a date value with a strftime pattern":
+        store d as parse_date of "2026-07-10" and "%Y-%m-%d"
+        create map dctx:
+            "d" is d
+        end map
+        store got as scribe_render of "{{ d | date('%d/%m/%Y') }}" and dctx
+        expect got to equal "10/07/2026"
+    end test
+
+    test "markdown renders headings, emphasis, and paragraphs":
+        store got as scribe_render of "{{ '# Hi\n\nA **bold** move.' | markdown }}" and t_ctx
+        expect got to equal "<h1>Hi</h1><p>A <strong>bold</strong> move.</p>"
+    end test
+
+    test "markdown escapes raw html before formatting":
+        store got as scribe_render of "{{ '<script>x</script>' | markdown }}" and t_ctx
+        expect got to equal "<p>&lt;script&gt;x&lt;/script&gt;</p>"
+    end test
+
+    test "markdown neutralises a javascript: link url":
+        store got as scribe_render of "{{ '[x](javascript:evil)' | markdown }}" and t_ctx
+        expect got to equal "<p><a href=\"#\">x</a></p>"
+    end test
+
+    test "markdown does not pair delimiters across separate code spans":
+        store got as scribe_render of "{{ 'run `a**b` and `c**d`' | markdown }}" and t_ctx
+        expect got to equal "<p>run <code>a**b</code> and <code>c**d</code></p>"
+    end test
+
+end describe
+
+describe "empty-collection rendering":
+
+    test "an empty list renders as empty text, not [ ]":
+        store empty_list as []
+        create map ectx:
+            "items" is empty_list
+        end map
+        store got as scribe_render of "before-{{ items }}-after" and ectx
+        expect got to equal "before--after"
+    end test
+
+end describe
