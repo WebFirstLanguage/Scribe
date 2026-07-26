@@ -71,7 +71,7 @@ Built-in filters:
 | `replace(from, to)` | Replace every `from` with `to` |
 | `abs` / `round` | Numeric absolute value / rounding |
 | `truncate(len)` / `truncate(len, suffix)` | Shorten text to `len` characters, appending `suffix` (default `"..."`) when it was cut |
-| `striptags` | Remove every `<…>` HTML tag, leaving the text content |
+| `striptags` | Remove every `<…>` HTML tag, leaving the text content: each tag becomes a word boundary, then runs of whitespace collapse to one space and the ends are trimmed |
 | `date(format)` | Format a `Date` / `Time` / `DateTime` value with a strftime pattern (e.g. `%Y-%m-%d`) |
 | `asset(base?)` / `url(base?)` | Build a URL: join an optional `base` with the value using exactly one slash; an empty base yields a root-relative path (`/css/app.css`) |
 | `markdown` | Render a safe subset of Markdown (headings, paragraphs, lists, blockquotes, ``` ``` ``` fenced code blocks, `**bold**`, `*italic*`, `` `code` ``, `[links](url)`) to trusted HTML |
@@ -94,6 +94,13 @@ block; everything up to the closing fence is emitted verbatim inside
 `<pre><code>…</code></pre>`, HTML-escaped and with no Markdown applied. An info
 string on the opening fence (` ```rust `) is accepted and not emitted. An
 unterminated fence still closes its block at the end of the input.
+
+**`striptags` and word boundaries.** Each removed tag leaves a space behind,
+then runs of whitespace collapse to a single space and the ends are trimmed. So
+`<p>One.</p><p>Two.</p>` strips to `One. Two.` rather than welding into
+`One.Two.` — which matters for the common excerpt idiom
+`{{ body | markdown | striptags | truncate(180) }}`. The cost is that a tag
+*inside* a word (`un<b>frigging</b>believable`) also splits it.
 
 **Filters and trusted text.** Filters that only subset, trim, or strip their
 input — `trim`, `first`, `last`, `truncate`, `striptags` — hand trusted text

@@ -767,6 +767,12 @@ define action called scribe_strip_tags with parameters sc_s:
         check if intag:
             check if ch is ">":
                 change intag to no
+                // Removing a tag must leave a word boundary behind. Deleting it
+                // outright welds the surrounding words together, so
+                // "<p>One.</p><p>Two.</p>" reads as "One.Two." — the failure an
+                // excerpt built from rendered markdown runs into. The space is
+                // collapsed away again below when it was not needed.
+                change out to out with " "
             end check
         otherwise:
             check if ch is "<":
@@ -782,6 +788,34 @@ define action called scribe_strip_tags with parameters sc_s:
     check if intag:
         change out to out with (substring of sc_s and tag_start and (n minus tag_start))
     end check
+    return scribe_collapse_space of out
+end action
+
+// Collapse every run of whitespace to a single space and trim the ends. Used by
+// `striptags`, where removing tags leaves behind the separators it inserted plus
+// whatever indentation the markup carried.
+define action called scribe_collapse_space with parameters sc_s:
+    store out as ""
+    store i as 0
+    store n as length of sc_s
+    store pending as no
+    store started as no
+    repeat while i is less than n:
+        store ch as substring of sc_s and i and 1
+        check if scribe_is_space of ch:
+            change pending to yes
+        otherwise:
+            check if pending:
+                check if started:
+                    change out to out with " "
+                end check
+                change pending to no
+            end check
+            change out to out with ch
+            change started to yes
+        end check
+        change i to i plus 1
+    end repeat
     return out
 end action
 

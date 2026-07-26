@@ -30,7 +30,7 @@ secure unless you explicitly opt out.
 - **Pure WFL.** No Rust, no host-language escape hatch. Scribe is one WFL file
   that runs anywhere WFL runs.
 - **Small and tested.** A readable lexer → parser → renderer pipeline with a
-  76-case test suite.
+  82-case test suite.
 
 ## Features
 
@@ -126,7 +126,7 @@ engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 76  Passed: 76  Failed: 0
+# Total: 82  Passed: 82  Failed: 0
 ```
 
 > **Note on WFL's static checker.** The WFL type checker prints some
@@ -138,7 +138,7 @@ tests/run.sh /path/to/wfl
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── tests/scribe.test.wfl     # test suite (76 cases), includes the engine
+├── tests/scribe.test.wfl     # test suite (82 cases), includes the engine
 ├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
 ├── examples/inheritance.wfl  # inheritance example + expected output
