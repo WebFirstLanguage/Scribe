@@ -410,3 +410,132 @@ describe "empty-collection rendering":
     end test
 
 end describe
+
+describe "markdown blockquotes":
+
+    test "a quoted line becomes a blockquote":
+        store got as scribe_render of "{{ '> quoted' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><p>quoted</p></blockquote>"
+    end test
+
+    test "consecutive quoted lines join into one blockquote paragraph":
+        store got as scribe_render of "{{ '> a\n> b' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><p>a b</p></blockquote>"
+    end test
+
+    test "a blank line closes the blockquote":
+        store got as scribe_render of "{{ '> q\n\nafter' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><p>q</p></blockquote><p>after</p>"
+    end test
+
+    test "inline markdown is applied inside a blockquote":
+        store got as scribe_render of "{{ '> a **bold** word' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><p>a <strong>bold</strong> word</p></blockquote>"
+    end test
+
+    test "html inside a blockquote is still escaped":
+        store got as scribe_render of "{{ '> <script>x</script>' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><p>&lt;script&gt;x&lt;/script&gt;</p></blockquote>"
+    end test
+
+    test "blockquotes nest":
+        store got as scribe_render of "{{ '> > deep' | markdown }}" and t_ctx
+        expect got to equal "<blockquote><blockquote><p>deep</p></blockquote></blockquote>"
+    end test
+
+    test "pathological nesting is bounded, not unbounded recursion":
+        // 40 levels of `> `, past the depth cap: the remainder is emitted as
+        // escaped plain text instead of driving the recursion deeper.
+        store deep as "text"
+        store i as 0
+        repeat while i is less than 40:
+            change deep to "> " with deep
+            change i to i plus 1
+        end repeat
+        create map deep_ctx:
+            "src" is deep
+        end map
+        store got as scribe_render of "{{ src | markdown }}" and deep_ctx
+        expect got to contain "text"
+    end test
+
+end describe
+
+describe "markdown fenced code blocks":
+
+    test "a fence renders a pre/code block":
+        store got as scribe_render of "{{ '```\nplain\n```' | markdown }}" and t_ctx
+        expect got to equal "<pre><code>plain</code></pre>"
+    end test
+
+    test "code block contents are escaped, not interpreted as html":
+        store got as scribe_render of "{{ '```\na < b & <i>c</i>\n```' | markdown }}" and t_ctx
+        expect got to equal "<pre><code>a &lt; b &amp; &lt;i&gt;c&lt;/i&gt;</code></pre>"
+    end test
+
+    test "markdown syntax inside a fence stays literal":
+        store got as scribe_render of "{{ '```\n# not a heading\n**not bold**\n```' | markdown }}" and t_ctx
+        expect got to equal "<pre><code># not a heading\n**not bold**</code></pre>"
+    end test
+
+    test "an info string on the opening fence is not emitted":
+        store got as scribe_render of "{{ '```rust\nlet x = 1;\n```' | markdown }}" and t_ctx
+        expect got to equal "<pre><code>let x = 1;</code></pre>"
+    end test
+
+    test "an unterminated fence still closes its code block":
+        store got as scribe_render of "{{ '```\ndangling' | markdown }}" and t_ctx
+        expect got to equal "<pre><code>dangling</code></pre>"
+    end test
+
+    test "a fence flushes an open paragraph first":
+        store got as scribe_render of "{{ 'intro\n```\ncode\n```' | markdown }}" and t_ctx
+        expect got to equal "<p>intro</p><pre><code>code</code></pre>"
+    end test
+
+end describe
+
+describe "filters preserve the safe marker":
+
+    // A filter that only subsets, trims, or strips already-trusted text must
+    // hand back trusted text. Dropping the marker makes the final interpolation
+    // escape the already-escaped entities a second time (`&#39;` -> `&amp;#39;`).
+
+    test "striptags keeps trusted output trusted":
+        store got as scribe_render of "{{ 'a > b' | markdown | striptags }}" and t_ctx
+        expect got to equal "a &gt; b"
+    end test
+
+    test "trim keeps trusted output trusted":
+        store got as scribe_render of "{{ '  <b>hi</b>  ' | raw | trim }}" and t_ctx
+        expect got to equal "<b>hi</b>"
+    end test
+
+    test "first keeps trusted output trusted":
+        store got as scribe_render of "{{ '<b>' | raw | first }}" and t_ctx
+        expect got to equal "<"
+    end test
+
+    test "last keeps trusted output trusted":
+        store got as scribe_render of "{{ '<b>' | raw | last }}" and t_ctx
+        expect got to equal ">"
+    end test
+
+    test "truncate keeps trusted output trusted and does not double-escape":
+        store got as scribe_render of "{{ \"it's a test\" | markdown | striptags | truncate(11) }}" and t_ctx
+        expect got to equal "it&#39;s a ..."
+    end test
+
+    test "truncate escapes a caller-supplied suffix on the trusted path":
+        // The trusted result skips output escaping, so an attacker-influenced
+        // suffix would otherwise be a raw-HTML injection point.
+        store got as scribe_render of "{{ 'abcdef' | raw | truncate(2, '<img src=x onerror=1>') }}" and t_ctx
+        expect got to equal "ab&lt;img src=x onerror=1&gt;"
+    end test
+
+    test "an untrusted value is still escaped after truncate":
+        store got as scribe_render of "{{ '<b>abcdef' | truncate(4, '') }}" and t_ctx
+        expect got to equal "&lt;b&gt;a"
+    end test
+
+end describe
