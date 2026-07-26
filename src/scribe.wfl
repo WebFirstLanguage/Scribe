@@ -1223,7 +1223,13 @@ define action called scribe_markdown_at with parameters sc_src and sc_depth:
         change out to out with "</ul>"
     end check
     check if in_bq:
-        change out to out with "<blockquote>" with (scribe_to_text of (scribe_markdown of bq_buf)) with "</blockquote>"
+        // Close through the bounded helper at the CURRENT depth. Calling the
+        // public scribe_markdown here would restart at depth 0, and since a
+        // single-line `> > > …` is buffered and only closed at end of input,
+        // every level would go through that reset — the cap would never engage
+        // and recursion would track the input's nesting until the call stack
+        // gave out.
+        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
     end check
     check if in_code:
         // An unterminated fence still renders as a code block.
