@@ -1013,12 +1013,47 @@ define action called scribe_md_is_li with parameters sc_s:
     return no
 end action
 
-// Render a markdown subset to trusted (safe-marked) HTML.
+// Is this line a fenced-code-block delimiter? A line whose first three
+// characters are ``` opens or closes a fence (an optional info string such as
+// ```rust may follow on the opening fence).
+define action called scribe_md_is_fence with parameters sc_s:
+    check if (length of sc_s) is less than 3:
+        return no
+    end check
+    check if (substring of sc_s and 0 and 3) is "```":
+        return yes
+    end check
+    return no
+end action
+
+// Render a blockquote's gathered inner text one nesting level down. The
+// recursion is bounded (a pathological `> > > …` input would otherwise drive
+// unbounded call depth); past the cap the remaining text is emitted as escaped
+// plain text rather than parsed for still-deeper quotes.
+define action called scribe_md_render_bq with parameters sc_bq and sc_depth:
+    check if sc_depth is greater than or equal to 32:
+        return scribe_escape of sc_bq
+    end check
+    return scribe_to_text of (scribe_markdown_at of sc_bq and (sc_depth plus 1))
+end action
+
+// Render a markdown subset to trusted (safe-marked) HTML. Public entry point:
+// callers use `scribe_markdown of src`; blockquote nesting is tracked via the
+// `sc_depth` parameter of the internal `scribe_markdown_at`.
 define action called scribe_markdown with parameters sc_src:
+    return scribe_markdown_at of sc_src and 0
+end action
+
+define action called scribe_markdown_at with parameters sc_src and sc_depth:
     store lines as split sc_src by "\n"
     store out as ""
     store in_list as no
     store para as ""
+    store in_bq as no
+    store bq_buf as ""
+    store in_code as no
+    store code_buf as ""
+    store code_started as no
     for each raw in lines:
         store line as raw
         store ll as length of line
@@ -1028,18 +1063,24 @@ define action called scribe_markdown with parameters sc_src:
             end check
         end check
         store trimmed as trim of line
-        check if (length of trimmed) is equal to 0:
-            check if (length of para) is greater than 0:
-                change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
-                change para to ""
-            end check
-            check if in_list:
-                change out to out with "</ul>"
-                change in_list to no
+        check if in_code:
+            // Inside a fenced code block every line is literal until the closing
+            // fence; nothing here is treated as markdown.
+            check if scribe_md_is_fence of trimmed:
+                change out to out with "<pre><code>" with (scribe_escape of code_buf) with "</code></pre>"
+                change code_buf to ""
+                change in_code to no
+            otherwise:
+                check if code_started:
+                    change code_buf to code_buf with "\n" with line
+                otherwise:
+                    change code_buf to line
+                    change code_started to yes
+                end check
             end check
         otherwise:
-            store hlevel as scribe_md_heading_level of trimmed
-            check if hlevel is greater than 0:
+            check if scribe_md_is_fence of trimmed:
+                // Opening fence: flush any open paragraph / list / blockquote.
                 check if (length of para) is greater than 0:
                     change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
                     change para to ""
@@ -1048,26 +1089,94 @@ define action called scribe_markdown with parameters sc_src:
                     change out to out with "</ul>"
                     change in_list to no
                 end check
-                store htext as trim of (substring of trimmed and (hlevel plus 1) and ((length of trimmed) minus (hlevel plus 1)))
-                store htag as "h" with hlevel
-                change out to out with "<" with htag with ">" with (scribe_md_inline of htext) with "</" with htag with ">"
+                check if in_bq:
+                    change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                    change bq_buf to ""
+                    change in_bq to no
+                end check
+                change in_code to yes
+                change code_buf to ""
+                change code_started to no
             otherwise:
-                check if scribe_md_is_li of trimmed:
+                check if (length of trimmed) is equal to 0:
                     check if (length of para) is greater than 0:
                         change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
                         change para to ""
                     end check
-                    check if scribe_negate of in_list:
-                        change out to out with "<ul>"
-                        change in_list to yes
+                    check if in_list:
+                        change out to out with "</ul>"
+                        change in_list to no
                     end check
-                    store itext as trim of (substring of trimmed and 2 and ((length of trimmed) minus 2))
-                    change out to out with "<li>" with (scribe_md_inline of itext) with "</li>"
+                    check if in_bq:
+                        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                        change bq_buf to ""
+                        change in_bq to no
+                    end check
                 otherwise:
-                    check if (length of para) is greater than 0:
-                        change para to para with " " with trimmed
+                    check if (substring of trimmed and 0 and 1) is ">":
+                        // Blockquote line: flush paragraph/list, strip one `>`
+                        // (and an optional following space), then gather the
+                        // inner text to render recursively as markdown.
+                        check if (length of para) is greater than 0:
+                            change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                            change para to ""
+                        end check
+                        check if in_list:
+                            change out to out with "</ul>"
+                            change in_list to no
+                        end check
+                        store inner as substring of trimmed and 1 and ((length of trimmed) minus 1)
+                        check if (length of inner) is greater than 0:
+                            check if (substring of inner and 0 and 1) is " ":
+                                change inner to substring of inner and 1 and ((length of inner) minus 1)
+                            end check
+                        end check
+                        check if in_bq:
+                            change bq_buf to bq_buf with "\n" with inner
+                        otherwise:
+                            change bq_buf to inner
+                            change in_bq to yes
+                        end check
                     otherwise:
-                        change para to trimmed
+                        // Any other non-blank line ends an open blockquote.
+                        check if in_bq:
+                            change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                            change bq_buf to ""
+                            change in_bq to no
+                        end check
+                        store hlevel as scribe_md_heading_level of trimmed
+                        check if hlevel is greater than 0:
+                            check if (length of para) is greater than 0:
+                                change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                                change para to ""
+                            end check
+                            check if in_list:
+                                change out to out with "</ul>"
+                                change in_list to no
+                            end check
+                            store htext as trim of (substring of trimmed and (hlevel plus 1) and ((length of trimmed) minus (hlevel plus 1)))
+                            store htag as "h" with hlevel
+                            change out to out with "<" with htag with ">" with (scribe_md_inline of htext) with "</" with htag with ">"
+                        otherwise:
+                            check if scribe_md_is_li of trimmed:
+                                check if (length of para) is greater than 0:
+                                    change out to out with "<p>" with (scribe_md_inline of para) with "</p>"
+                                    change para to ""
+                                end check
+                                check if scribe_negate of in_list:
+                                    change out to out with "<ul>"
+                                    change in_list to yes
+                                end check
+                                store itext as trim of (substring of trimmed and 2 and ((length of trimmed) minus 2))
+                                change out to out with "<li>" with (scribe_md_inline of itext) with "</li>"
+                            otherwise:
+                                check if (length of para) is greater than 0:
+                                    change para to para with " " with trimmed
+                                otherwise:
+                                    change para to trimmed
+                                end check
+                            end check
+                        end check
                     end check
                 end check
             end check
@@ -1079,12 +1188,26 @@ define action called scribe_markdown with parameters sc_src:
     check if in_list:
         change out to out with "</ul>"
     end check
+    check if in_bq:
+        change out to out with "<blockquote>" with (scribe_to_text of (scribe_markdown of bq_buf)) with "</blockquote>"
+    end check
+    check if in_code:
+        // An unterminated fence still renders as a code block.
+        change out to out with "<pre><code>" with (scribe_escape of code_buf) with "</code></pre>"
+    end check
     return scribe_raw_marker of out
 end action
 
 // Apply a named filter to a value. `args` is a list of already-evaluated args.
 define action called scribe_apply_filter with parameters sc_fname and sc_val and sc_filter_args:
     store argc as length of sc_filter_args
+    // If the input was already safe-marked (e.g. the output of `markdown`), the
+    // text-transform filters below only subset/whitespace-trim/strip that trusted
+    // text — the result is still safe, so we must re-mark it. Otherwise a chain
+    // like `markdown | striptags | truncate` would drop the marker and the final
+    // interpolation would escape the already-escaped entities a second time
+    // (`&#39;` -> `&amp;#39;`). See issue #7.
+    store sc_was_safe as scribe_is_safe of sc_val
     check if sc_fname is "upper":
         return touppercase of (scribe_to_text of sc_val)
     end check
@@ -1098,7 +1221,11 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         return scribe_title of (scribe_to_text of sc_val)
     end check
     check if sc_fname is "trim":
-        return trim of (scribe_to_text of sc_val)
+        store sc_trimmed as trim of (scribe_to_text of sc_val)
+        check if sc_was_safe:
+            return scribe_raw_marker of sc_trimmed
+        end check
+        return sc_trimmed
     end check
     check if sc_fname is "length":
         store vt as typeof of sc_val
@@ -1123,7 +1250,11 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
             end check
             return nothing
         end check
-        return substring of (scribe_to_text of sc_val) and 0 and 1
+        store sc_firstch as substring of (scribe_to_text of sc_val) and 0 and 1
+        check if sc_was_safe:
+            return scribe_raw_marker of sc_firstch
+        end check
+        return sc_firstch
     end check
     check if sc_fname is "last":
         check if (typeof of sc_val) is "List":
@@ -1133,7 +1264,11 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
             return nothing
         end check
         store sc_s as scribe_to_text of sc_val
-        return substring of sc_s and ((length of sc_s) minus 1) and 1
+        store sc_lastch as substring of sc_s and ((length of sc_s) minus 1) and 1
+        check if sc_was_safe:
+            return scribe_raw_marker of sc_lastch
+        end check
+        return sc_lastch
     end check
     check if sc_fname is "join":
         store sep as ""
@@ -1188,13 +1323,29 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         check if argc is greater than or equal to 2:
             change suffix to scribe_to_text of (sc_filter_args[1])
         end check
-        check if (length of txt) is less than or equal to lim:
-            return txt
+        store sc_trunc as txt
+        check if (length of txt) is greater than lim:
+            // On the safe path the whole result is marked safe and skips output
+            // escaping, so the caller-supplied suffix (an arbitrary expression,
+            // not just a literal) must be escaped here or it would be a raw-HTML
+            // injection point. On the unsafe path output-time escaping covers it.
+            check if sc_was_safe:
+                change sc_trunc to (substring of txt and 0 and lim) with (scribe_escape of suffix)
+            otherwise:
+                change sc_trunc to (substring of txt and 0 and lim) with suffix
+            end check
         end check
-        return (substring of txt and 0 and lim) with suffix
+        check if sc_was_safe:
+            return scribe_raw_marker of sc_trunc
+        end check
+        return sc_trunc
     end check
     check if sc_fname is "striptags":
-        return scribe_strip_tags of (scribe_to_text of sc_val)
+        store sc_stripped as scribe_strip_tags of (scribe_to_text of sc_val)
+        check if sc_was_safe:
+            return scribe_raw_marker of sc_stripped
+        end check
+        return sc_stripped
     end check
     check if sc_fname is "date":
         store fmt as ""

@@ -30,7 +30,7 @@ secure unless you explicitly opt out.
 - **Pure WFL.** No Rust, no host-language escape hatch. Scribe is one WFL file
   that runs anywhere WFL runs.
 - **Small and tested.** A readable lexer → parser → renderer pipeline with a
-  51-case test suite.
+  76-case test suite.
 
 ## Features
 
@@ -55,6 +55,9 @@ secure unless you explicitly opt out.
 - Multi-level template inheritance: `{% extends "base.html" %}` with
   `{% block name %}…{% endblock %}` overrides and defaults, chained as many
   levels deep as you like (child → theme → base)
+- Markdown via the `markdown` filter: headings, paragraphs, lists,
+  blockquotes (nested), ``` ``` ``` fenced code blocks, emphasis, inline code,
+  and safe links — escaped first, dangerous URL schemes neutralised
 - Comments: `{# … #}`
 - Raw blocks: `{% verbatim %}…{% endverbatim %}`
 
@@ -123,7 +126,7 @@ engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 51  Passed: 51  Failed: 0
+# Total: 76  Passed: 76  Failed: 0
 ```
 
 > **Note on WFL's static checker.** The WFL type checker prints some
@@ -135,7 +138,7 @@ tests/run.sh /path/to/wfl
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── tests/scribe.test.wfl     # test suite (51 cases), includes the engine
+├── tests/scribe.test.wfl     # test suite (76 cases), includes the engine
 ├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
 ├── examples/inheritance.wfl  # inheritance example + expected output

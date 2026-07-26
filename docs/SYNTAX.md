@@ -74,7 +74,7 @@ Built-in filters:
 | `striptags` | Remove every `<…>` HTML tag, leaving the text content |
 | `date(format)` | Format a `Date` / `Time` / `DateTime` value with a strftime pattern (e.g. `%Y-%m-%d`) |
 | `asset(base?)` / `url(base?)` | Build a URL: join an optional `base` with the value using exactly one slash; an empty base yields a root-relative path (`/css/app.css`) |
-| `markdown` | Render a safe subset of Markdown (headings, paragraphs, lists, `**bold**`, `*italic*`, `` `code` ``, `[links](url)`) to trusted HTML |
+| `markdown` | Render a safe subset of Markdown (headings, paragraphs, lists, blockquotes, ``` ``` ``` fenced code blocks, `**bold**`, `*italic*`, `` `code` ``, `[links](url)`) to trusted HTML |
 | `escape` / `e` | Explicitly HTML-escape (safe against double-escaping) |
 | `raw` | Opt out of auto-escaping for this value |
 
@@ -82,6 +82,25 @@ The `markdown` filter HTML-escapes its input *before* applying formatting, so
 untrusted content can't inject markup, and it neutralises dangerous link URL
 schemes (`javascript:`, `vbscript:`, `data:` become `#`). The result is then
 trusted and printed without a second round of escaping.
+
+**Blockquotes.** Lines beginning with `>` gather into a `<blockquote>`, closed
+by a blank line or by any non-quoted line. The quoted text is itself rendered as
+Markdown, so quotes nest (`> > deep`) and inline formatting works inside them.
+Nesting is bounded — past 32 levels the remainder is emitted as escaped plain
+text rather than recursing further.
+
+**Fenced code blocks.** A line whose first three characters are ` ``` ` opens a
+block; everything up to the closing fence is emitted verbatim inside
+`<pre><code>…</code></pre>`, HTML-escaped and with no Markdown applied. An info
+string on the opening fence (` ```rust `) is accepted and not emitted. An
+unterminated fence still closes its block at the end of the input.
+
+**Filters and trusted text.** Filters that only subset, trim, or strip their
+input — `trim`, `first`, `last`, `truncate`, `striptags` — hand trusted text
+back as trusted text, so a chain like `markdown | striptags | truncate(80)`
+prints once-escaped rather than double-escaped (`&#39;`, not `&amp;#39;`). On
+that trusted path `truncate` escapes its suffix argument, since the result skips
+output escaping and the suffix may be an arbitrary expression.
 
 ### Expressions
 
@@ -332,5 +351,7 @@ paths in the template walk them.
 * No whitespace control (`{{-` / `-}}`) yet — see the roadmap in
   [DESIGN.md](DESIGN.md).
 * The `markdown` filter renders a deliberately small subset (headings,
-  paragraphs, unordered lists, `**bold**`, `*italic*`, `` `code` ``, and
-  `[links](url)`); it is not a full CommonMark implementation.
+  paragraphs, unordered lists, blockquotes, fenced code blocks, `**bold**`,
+  `*italic*`, `` `code` ``, and `[links](url)`); it is not a full CommonMark
+  implementation. Notably absent: ordered lists, tables, setext headings,
+  reference links, and images.
