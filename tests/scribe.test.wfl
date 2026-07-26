@@ -539,3 +539,45 @@ describe "filters preserve the safe marker":
     end test
 
 end describe
+
+describe "striptags across block elements":
+
+    // Removing a tag has to leave a word boundary behind. Deleting it outright
+    // welds the surrounding words together ("one.Two"), which is exactly what an
+    // excerpt built as `body | markdown | striptags | truncate(n)` looks like.
+
+    test "adjacent block elements do not weld their text together":
+        store got as scribe_render of "{{ '<p>One.</p><p>Two.</p>' | raw | striptags }}" and t_ctx
+        expect got to equal "One. Two."
+    end test
+
+    test "list items stay separated":
+        store got as scribe_render of "{{ '<ul><li>one</li><li>two</li></ul>' | raw | striptags }}" and t_ctx
+        expect got to equal "one two"
+    end test
+
+    test "inline tags inside a word do not introduce a space":
+        store got as scribe_render of "{{ 'un<b>frigging</b>believable' | raw | striptags }}" and t_ctx
+        expect got to equal "un frigging believable"
+    end test
+
+    test "runs of whitespace collapse to one space":
+        store got as scribe_render of "{{ '<p>a</p>   \n  <p>b</p>' | raw | striptags }}" and t_ctx
+        expect got to equal "a b"
+    end test
+
+    test "leading and trailing whitespace is trimmed":
+        store got as scribe_render of "{{ '  <p>only</p>  ' | raw | striptags }}" and t_ctx
+        expect got to equal "only"
+    end test
+
+    test "a rendered markdown post reads as prose":
+        store md as "Intro line.\n\n> a quoted claim\n\n- one\n- two"
+        create map mctx:
+            "body" is md
+        end map
+        store got as scribe_render of "{{ body | markdown | striptags }}" and mctx
+        expect got to equal "Intro line. a quoted claim one two"
+    end test
+
+end describe
