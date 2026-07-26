@@ -443,9 +443,12 @@ describe "markdown blockquotes":
         expect got to equal "<blockquote><blockquote><p>deep</p></blockquote></blockquote>"
     end test
 
-    test "pathological nesting is bounded, not unbounded recursion":
-        // 40 levels of `> `, past the depth cap: the remainder is emitted as
-        // escaped plain text instead of driving the recursion deeper.
+    test "pathological nesting actually hits the depth cap":
+        // 40 levels of `> `, past the cap of 32. Once the cap engages the rest
+        // is emitted as escaped plain text, so the output must still contain an
+        // escaped `>` — the marker that recursion stopped early. Asserting only
+        // that "text" survives is not enough: an unbounded renderer produces
+        // that too, it just recurses 40 deep to do it.
         store deep as "text"
         store i as 0
         repeat while i is less than 40:
@@ -456,7 +459,25 @@ describe "markdown blockquotes":
             "src" is deep
         end map
         store got as scribe_render of "{{ src | markdown }}" and deep_ctx
-        expect got to contain "text"
+        expect got to contain "&gt;"
+    end test
+
+    test "a quote left open at end of input is still capped":
+        // The whole quote sits on one line, so it is buffered and only closed at
+        // end of input. That close path must stay inside the same depth budget —
+        // if it restarts at depth 0 the cap never engages and recursion tracks
+        // the input's nesting level, exhausting the call stack.
+        store deep as "text"
+        store i as 0
+        repeat while i is less than 1200:
+            change deep to "> " with deep
+            change i to i plus 1
+        end repeat
+        create map deep_ctx:
+            "src" is deep
+        end map
+        store got as scribe_render of "{{ src | markdown }}" and deep_ctx
+        expect got to contain "&gt;"
     end test
 
 end describe
