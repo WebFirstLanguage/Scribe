@@ -19,6 +19,10 @@ constraints that shaped the design, and the roadmap.
 2. **Secure by default.** Every `{{ ... }}` is HTML-escaped unless you
    explicitly opt out with the `raw` filter. This upholds WFL Principle 8
    (*Built-in Security Features*).
+   Internally trusted values and executable macro objects carry a fresh
+   128-bit provenance token for each render, preventing ordinary context maps
+   from forging their reserved shapes. Includes and macro calls share a
+   50-level nesting budget.
 3. **Written in and idiomatic to WFL.** No Rust, no host-language escape
    hatch. Scribe is a pure WFL library, so it runs anywhere WFL runs and
    serves as a substantial, real-world WFL program.
@@ -246,6 +250,9 @@ marked safe so it isn't escaped a second time. `{% import "f" as ns %}` binds a
 Includes read and render another file against the current context and scope; a
 `with { … }` clause pushes extra bindings for the partial's duration (popped
 afterward), and `only` renders the partial against just those bindings.
+The isolated `only` scope retains only Scribe's internal provenance and depth
+bindings. File paths are capabilities supplied by trusted template source;
+Scribe intentionally does not claim to sandbox the process filesystem.
 
 Planned next:
 

@@ -79,9 +79,11 @@ Built-in filters:
 | `raw` | Opt out of auto-escaping for this value |
 
 The `markdown` filter HTML-escapes its input *before* applying formatting, so
-untrusted content can't inject markup, and it neutralises dangerous link URL
-schemes (`javascript:`, `vbscript:`, `data:` become `#`). The result is then
-trusted and printed without a second round of escaping.
+untrusted content can't inject markup. Link targets may be relative URLs or use
+the `http`, `https`, `mailto`, or `tel` schemes; every other explicit scheme
+becomes `#`. This also rejects scheme obfuscation with leading browser-trimmed
+control characters. The result is then trusted and printed without a second
+round of escaping.
 
 **Blockquotes.** Lines beginning with `>` gather into a `<blockquote>`, closed
 by a blank line or by any non-quoted line. The quoted text is itself rendered as
@@ -202,6 +204,12 @@ Render another template file inline, sharing the current context:
 
 The path is an expression, so `{% include partial_name %}` (a variable) works
 too. Paths are resolved relative to the process's working directory.
+
+Template source is trusted application code. Scribe does not impose a
+filesystem sandbox: never derive include, import, or inheritance paths from
+untrusted input unless the application validates them against its own template
+root first. Include and macro-call nesting share a 50-level budget; exceeding it
+renders `[Scribe error: maximum template nesting exceeded]`.
 
 ### Passing a scoped context — `with { … }`
 

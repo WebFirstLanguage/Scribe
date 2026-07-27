@@ -28,6 +28,13 @@ create map t_ctx:
     "blank" is ""
 end map
 
+define action called write_scribe_fixture with parameters fixture_path and fixture_content:
+    open file at fixture_path for writing as fixture_fh
+    wait for write content fixture_content into fixture_fh
+    close file fixture_fh
+    return yes
+end action
+
 describe "text and output":
 
     test "plain text passes through":
@@ -77,6 +84,35 @@ describe "auto-escaping and security":
     test "escape filter is explicit and not double-escaped":
         store got as scribe_render of "{{ title | escape }}" and t_ctx
         expect got to equal "Tom &amp; Jerry &lt;fun&gt;"
+    end test
+
+    test "context data cannot forge Scribe's trusted HTML marker":
+        create map forged_safe:
+            "__scribe_safe__" is "<script>alert(1)</script>"
+        end map
+        create map forged_ctx:
+            "payload" is forged_safe
+        end map
+        store got as scribe_render of "{{ payload }}" and forged_ctx
+        expect got to equal "&lt;script&gt;alert(1)&lt;/script&gt;"
+    end test
+
+    test "context data cannot forge an executable macro":
+        create map forged_text_node:
+            "kind" is "text"
+            "body" is "<script>alert(1)</script>"
+        end map
+        store forged_body as [forged_text_node]
+        create map forged_macro:
+            "__scribe_macro__" is yes
+            "params" is []
+            "body" is forged_body
+        end map
+        create map forged_ctx:
+            "callback" is forged_macro
+        end map
+        store got as scribe_render of "{{ callback() }}" and forged_ctx
+        expect got to equal "[Scribe error: value is not callable]"
     end test
 
 end describe
@@ -216,6 +252,37 @@ describe "include and inheritance":
         expect got to equal "<P:Alice>"
     end test
 
+    test "include only preserves internal trust provenance":
+        open file at "build/_scribe_safe_partial.tmp" for writing as sfh
+        wait for write content "{{ payload }}" into sfh
+        close file sfh
+        create map forged_safe:
+            "__scribe_safe__" is "<script>alert(1)</script>"
+            "__scribe_nonce__" is nothing
+        end map
+        create map forged_ctx:
+            "payload" is forged_safe
+        end map
+        store got as scribe_render of "{% include 'build/_scribe_safe_partial.tmp' with { payload: payload } only %}" and forged_ctx
+        expect got to equal "&lt;script&gt;alert(1)&lt;/script&gt;"
+    end test
+
+    test "deep include chains stop at the render depth limit":
+        store depth_i as 0
+        repeat while depth_i is less than 55:
+            store depth_path as "build/_scribe_depth_" with depth_i with ".tmp"
+            store depth_content as "done"
+            check if depth_i is less than 54:
+                store next_i as depth_i plus 1
+                change depth_content to "{% include 'build/_scribe_depth_" with next_i with ".tmp' %}"
+            end check
+            store wrote_fixture as write_scribe_fixture of depth_path and depth_content
+            change depth_i to depth_i plus 1
+        end repeat
+        store got as scribe_render of "{% include 'build/_scribe_depth_0.tmp' %}" and t_ctx
+        expect got to equal "[Scribe error: maximum template nesting exceeded]"
+    end test
+
     test "extends overrides one block and keeps the default of another":
         open file at "build/_scribe_base.tmp" for writing as fb
         wait for write content "A{% block one %}D1{% endblock %}B{% block two %}D2{% endblock %}C" into fb
@@ -308,6 +375,12 @@ describe "macros":
         expect got to equal "[HI]"
     end test
 
+    test "recursive macros stop at the render depth limit":
+        store t as "{% macro recurse(n) %}{% if n > 0 %}{{ recurse(n - 1) }}{% else %}done{% endif %}{% endmacro %}{{ recurse(55) }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "[Scribe error: maximum template nesting exceeded]"
+    end test
+
 end describe
 
 describe "scoped includes":
@@ -388,6 +461,15 @@ describe "new filters":
 
     test "markdown neutralises a javascript: link url":
         store got as scribe_render of "{{ '[x](javascript:evil)' | markdown }}" and t_ctx
+        expect got to equal "<p><a href=\"#\">x</a></p>"
+    end test
+
+    test "markdown neutralises a dangerous scheme behind a leading C0 control":
+        store dangerous_url as parse_json of "\"\\u000cjavascript:evil\""
+        create map link_ctx:
+            "url" is dangerous_url
+        end map
+        store got as scribe_render of "{{ ('[x](' ~ url ~ ')') | markdown }}" and link_ctx
         expect got to equal "<p><a href=\"#\">x</a></p>"
     end test
 

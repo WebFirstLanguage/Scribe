@@ -616,23 +616,27 @@ define action called scribe_lookup with parameters sc_name and sc_ctx and sc_sco
 end action
 
 // Read a member (map key or list index) from a value; nothing if absent.
-define action called scribe_get_member with parameters sc_obj and sc_key:
+define action called scribe_get_member with parameters sc_obj and sc_key and sc_nonce:
     store sc_t as typeof of sc_obj
     check if sc_t is "Object":
         // A macro namespace (from `{% import %}`) resolves members from its
         // internal binding list rather than as ordinary map keys.
         check if sc_obj contains "__scribe_ns__":
-            store nsb as sc_obj["binds"]
-            store ni as 0
-            store nn as length of nsb
-            repeat while ni is less than nn:
-                store nb as nsb[ni]
-                check if (nb["name"]) is sc_key:
-                    return nb["value"]
+            check if sc_obj contains "__scribe_nonce__":
+                check if scribe_equals of (sc_obj["__scribe_nonce__"]) and sc_nonce:
+                    store nsb as sc_obj["binds"]
+                    store ni as 0
+                    store nn as length of nsb
+                    repeat while ni is less than nn:
+                        store nb as nsb[ni]
+                        check if (nb["name"]) is sc_key:
+                            return nb["value"]
+                        end check
+                        change ni to ni plus 1
+                    end repeat
+                    return nothing
                 end check
-                change ni to ni plus 1
-            end repeat
-            return nothing
+            end check
         end check
         check if sc_obj contains sc_key:
             return sc_obj[sc_key]
@@ -711,17 +715,20 @@ end action
 
 // --- filters
 
-define action called scribe_raw_marker with parameters sc_txt:
+define action called scribe_raw_marker with parameters sc_txt and sc_nonce:
     create map m:
         "__scribe_safe__" is sc_txt
+        "__scribe_nonce__" is sc_nonce
     end map
     return m
 end action
 
-define action called scribe_is_safe with parameters sc_v:
+define action called scribe_is_safe with parameters sc_v and sc_nonce:
     check if (typeof of sc_v) is "Object":
         check if sc_v contains "__scribe_safe__":
-            return yes
+            check if sc_v contains "__scribe_nonce__":
+                return scribe_equals of (sc_v["__scribe_nonce__"]) and sc_nonce
+            end check
         end check
     end check
     return no
@@ -941,14 +948,40 @@ define action called scribe_md_safe_url with parameters sc_url:
         change i to i plus 1
     end repeat
     store low as tolowercase of compact
-    check if (indexof of low and "javascript:") is equal to 0:
-        return "#"
-    end check
-    check if (indexof of low and "vbscript:") is equal to 0:
-        return "#"
-    end check
-    check if (indexof of low and "data:") is equal to 0:
-        return "#"
+    // A colon before any relative-URL delimiter means the prefix is a scheme.
+    // Fail closed to a small browser-safe allowlist. Besides blocking the
+    // obvious script/data schemes, this catches leading C0 controls that the
+    // browser URL parser trims before interpreting `javascript:`.
+    store colon_pos as indexof of low and ":"
+    check if colon_pos is greater than or equal to 0:
+        store slash_pos as indexof of low and "/"
+        store query_pos as indexof of low and "?"
+        store hash_pos as indexof of low and "#"
+        store has_scheme as yes
+        check if (slash_pos is greater than or equal to 0) and (slash_pos is less than colon_pos):
+            change has_scheme to no
+        end check
+        check if (query_pos is greater than or equal to 0) and (query_pos is less than colon_pos):
+            change has_scheme to no
+        end check
+        check if (hash_pos is greater than or equal to 0) and (hash_pos is less than colon_pos):
+            change has_scheme to no
+        end check
+        check if has_scheme:
+            check if (indexof of low and "http:") is equal to 0:
+                return sc_url
+            end check
+            check if (indexof of low and "https:") is equal to 0:
+                return sc_url
+            end check
+            check if (indexof of low and "mailto:") is equal to 0:
+                return sc_url
+            end check
+            check if (indexof of low and "tel:") is equal to 0:
+                return sc_url
+            end check
+            return "#"
+        end check
     end check
     return sc_url
 end action
@@ -1064,21 +1097,21 @@ end action
 // recursion is bounded (a pathological `> > > …` input would otherwise drive
 // unbounded call depth); past the cap the remaining text is emitted as escaped
 // plain text rather than parsed for still-deeper quotes.
-define action called scribe_md_render_bq with parameters sc_bq and sc_depth:
+define action called scribe_md_render_bq with parameters sc_bq and sc_depth and sc_nonce:
     check if sc_depth is greater than or equal to 32:
         return scribe_escape of sc_bq
     end check
-    return scribe_to_text of (scribe_markdown_at of sc_bq and (sc_depth plus 1))
+    return scribe_to_text of (scribe_markdown_at of sc_bq and (sc_depth plus 1) and sc_nonce)
 end action
 
 // Render a markdown subset to trusted (safe-marked) HTML. Public entry point:
-// callers use `scribe_markdown of src`; blockquote nesting is tracked via the
+// callers use the `markdown` filter; blockquote nesting is tracked via the
 // `sc_depth` parameter of the internal `scribe_markdown_at`.
-define action called scribe_markdown with parameters sc_src:
-    return scribe_markdown_at of sc_src and 0
+define action called scribe_markdown with parameters sc_src and sc_nonce:
+    return scribe_markdown_at of sc_src and 0 and sc_nonce
 end action
 
-define action called scribe_markdown_at with parameters sc_src and sc_depth:
+define action called scribe_markdown_at with parameters sc_src and sc_depth and sc_nonce:
     store lines as split sc_src by "\n"
     store out as ""
     store in_list as no
@@ -1124,7 +1157,7 @@ define action called scribe_markdown_at with parameters sc_src and sc_depth:
                     change in_list to no
                 end check
                 check if in_bq:
-                    change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                    change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth and sc_nonce) with "</blockquote>"
                     change bq_buf to ""
                     change in_bq to no
                 end check
@@ -1142,7 +1175,7 @@ define action called scribe_markdown_at with parameters sc_src and sc_depth:
                         change in_list to no
                     end check
                     check if in_bq:
-                        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth and sc_nonce) with "</blockquote>"
                         change bq_buf to ""
                         change in_bq to no
                     end check
@@ -1174,7 +1207,7 @@ define action called scribe_markdown_at with parameters sc_src and sc_depth:
                     otherwise:
                         // Any other non-blank line ends an open blockquote.
                         check if in_bq:
-                            change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+                            change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth and sc_nonce) with "</blockquote>"
                             change bq_buf to ""
                             change in_bq to no
                         end check
@@ -1229,17 +1262,17 @@ define action called scribe_markdown_at with parameters sc_src and sc_depth:
         // every level would go through that reset — the cap would never engage
         // and recursion would track the input's nesting until the call stack
         // gave out.
-        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth) with "</blockquote>"
+        change out to out with "<blockquote>" with (scribe_md_render_bq of bq_buf and sc_depth and sc_nonce) with "</blockquote>"
     end check
     check if in_code:
         // An unterminated fence still renders as a code block.
         change out to out with "<pre><code>" with (scribe_escape of code_buf) with "</code></pre>"
     end check
-    return scribe_raw_marker of out
+    return scribe_raw_marker of out and sc_nonce
 end action
 
 // Apply a named filter to a value. `args` is a list of already-evaluated args.
-define action called scribe_apply_filter with parameters sc_fname and sc_val and sc_filter_args:
+define action called scribe_apply_filter with parameters sc_fname and sc_val and sc_filter_args and sc_nonce:
     store argc as length of sc_filter_args
     // If the input was already safe-marked (e.g. the output of `markdown`), the
     // text-transform filters below only subset/whitespace-trim/strip that trusted
@@ -1247,7 +1280,7 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
     // like `markdown | striptags | truncate` would drop the marker and the final
     // interpolation would escape the already-escaped entities a second time
     // (`&#39;` -> `&amp;#39;`). See issue #7.
-    store sc_was_safe as scribe_is_safe of sc_val
+    store sc_was_safe as scribe_is_safe of sc_val and sc_nonce
     check if sc_fname is "upper":
         return touppercase of (scribe_to_text of sc_val)
     end check
@@ -1263,7 +1296,7 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
     check if sc_fname is "trim":
         store sc_trimmed as trim of (scribe_to_text of sc_val)
         check if sc_was_safe:
-            return scribe_raw_marker of sc_trimmed
+            return scribe_raw_marker of sc_trimmed and sc_nonce
         end check
         return sc_trimmed
     end check
@@ -1292,7 +1325,7 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         end check
         store sc_firstch as substring of (scribe_to_text of sc_val) and 0 and 1
         check if sc_was_safe:
-            return scribe_raw_marker of sc_firstch
+            return scribe_raw_marker of sc_firstch and sc_nonce
         end check
         return sc_firstch
     end check
@@ -1306,7 +1339,7 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         store sc_s as scribe_to_text of sc_val
         store sc_lastch as substring of sc_s and ((length of sc_s) minus 1) and 1
         check if sc_was_safe:
-            return scribe_raw_marker of sc_lastch
+            return scribe_raw_marker of sc_lastch and sc_nonce
         end check
         return sc_lastch
     end check
@@ -1342,13 +1375,13 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         return round of sc_val
     end check
     check if sc_fname is "raw":
-        return scribe_raw_marker of (scribe_to_text of sc_val)
+        return scribe_raw_marker of (scribe_to_text of sc_val) and sc_nonce
     end check
     check if sc_fname is "escape":
-        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val))
+        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val)) and sc_nonce
     end check
     check if sc_fname is "e":
-        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val))
+        return scribe_raw_marker of (scribe_escape of (scribe_to_text of sc_val)) and sc_nonce
     end check
     check if sc_fname is "truncate":
         store txt as scribe_to_text of sc_val
@@ -1376,14 +1409,14 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
             end check
         end check
         check if sc_was_safe:
-            return scribe_raw_marker of sc_trunc
+            return scribe_raw_marker of sc_trunc and sc_nonce
         end check
         return sc_trunc
     end check
     check if sc_fname is "striptags":
         store sc_stripped as scribe_strip_tags of (scribe_to_text of sc_val)
         check if sc_was_safe:
-            return scribe_raw_marker of sc_stripped
+            return scribe_raw_marker of sc_stripped and sc_nonce
         end check
         return sc_stripped
     end check
@@ -1421,7 +1454,7 @@ define action called scribe_apply_filter with parameters sc_fname and sc_val and
         return scribe_join_url of base and (scribe_to_text of sc_val)
     end check
     check if sc_fname is "markdown":
-        return scribe_markdown of (scribe_to_text of sc_val)
+        return scribe_markdown of (scribe_to_text of sc_val) and sc_nonce
     end check
     return "[Scribe error: unknown filter '" with sc_fname with "']"
 end action
@@ -1471,7 +1504,8 @@ define action called scribe_p_primary with parameters sc_toks and sc_pos and sc_
         repeat while postfix:
             check if scribe_is_op of (sc_toks[np]) and ".":
                 store seg as sc_toks[np plus 1]
-                change curval to scribe_get_member of curval and (seg["v"])
+                store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+                change curval to scribe_get_member of curval and (seg["v"]) and sc_nonce
                 change np to np plus 2
             otherwise:
                 check if scribe_is_op of (sc_toks[np]) and "(":
@@ -1525,7 +1559,8 @@ define action called scribe_p_filter with parameters sc_toks and sc_pos and sc_c
                 change np to np plus 1
             end check
         end check
-        change curval to scribe_apply_filter of sc_fname and curval and fargs
+        store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+        change curval to scribe_apply_filter of sc_fname and curval and fargs and sc_nonce
     end repeat
     return scribe_res of curval and np
 end action
@@ -2164,7 +2199,8 @@ end action
 
 define action called scribe_render_output with parameters sc_node and sc_ctx and sc_scope:
     store sc_val as scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope
-    check if scribe_is_safe of sc_val:
+    store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+    check if scribe_is_safe of sc_val and sc_nonce:
         return sc_val["__scribe_safe__"]
     end check
     return scribe_escape of (scribe_to_text of sc_val)
@@ -2271,6 +2307,11 @@ end action
 // isolates the partial so it sees ONLY the with-variables — removing the
 // set-before-include dance for passing a small, explicit context to a partial.
 define action called scribe_render_include with parameters sc_node and sc_ctx and sc_scope:
+    store sc_depth as scribe_lookup of "__scribe_template_depth__" and sc_ctx and sc_scope
+    check if sc_depth is greater than or equal to 50:
+        return "[Scribe error: maximum template nesting exceeded]"
+    end check
+    store next_depth as sc_depth plus 1
     store sc_path as scribe_to_text of (scribe_eval_expr of (sc_node["expr"]) and sc_ctx and sc_scope)
     store sc_src as scribe_read_file of sc_path
     store inc_toks as scribe_lex of sc_src
@@ -2281,6 +2322,9 @@ define action called scribe_render_include with parameters sc_node and sc_ctx an
         // Isolated render: a fresh scope holding just the with-variables, and an
         // empty context so nothing leaks in from the caller.
         store inc_scope as []
+        store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+        push with inc_scope and (scribe_binding of "__scribe_nonce__" and sc_nonce)
+        push with inc_scope and (scribe_binding of "__scribe_template_depth__" and next_depth)
         check if (length of with_pairs) is greater than 0:
             for each pr in with_pairs:
                 store pv as scribe_eval_expr of (pr["expr"]) and sc_ctx and sc_scope
@@ -2291,21 +2335,21 @@ define action called scribe_render_include with parameters sc_node and sc_ctx an
         end map
         return scribe_render_nodes of inc_nodes and empty_ctx and inc_scope
     end check
+    // Shared render with the incremented depth and any extra variables pushed
+    // for the duration of the partial, then popped so they cannot leak back.
+    store save_depth as length of sc_scope
+    push with sc_scope and (scribe_binding of "__scribe_template_depth__" and next_depth)
     check if (length of with_pairs) is greater than 0:
-        // Shared render with extra variables pushed for the duration of the
-        // partial, then popped so they don't leak back to the caller.
-        store save_depth as length of sc_scope
         for each pr in with_pairs:
             store pv as scribe_eval_expr of (pr["expr"]) and sc_ctx and sc_scope
             push with sc_scope and (scribe_binding of (pr["key"]) and pv)
         end for
-        store out as scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
-        repeat while (length of sc_scope) is greater than save_depth:
-            store discard as pop of sc_scope
-        end repeat
-        return out
     end check
-    return scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
+    store out as scribe_render_nodes of inc_nodes and sc_ctx and sc_scope
+    repeat while (length of sc_scope) is greater than save_depth:
+        store discard as pop of sc_scope
+    end repeat
+    return out
 end action
 
 // {% block name %} — render the child's override if bound, else the default.
@@ -2373,9 +2417,10 @@ end action
 // ----------------------------------------------------------------------------
 
 // Build the stored value for a macro definition node.
-define action called scribe_macro_value with parameters sc_node:
+define action called scribe_macro_value with parameters sc_node and sc_nonce:
     create map m:
         "__scribe_macro__" is yes
+        "__scribe_nonce__" is sc_nonce
         "params" is (sc_node["params"])
         "body" is (sc_node["body"])
     end map
@@ -2383,10 +2428,12 @@ define action called scribe_macro_value with parameters sc_node:
 end action
 
 // Is `sc_v` a macro value?
-define action called scribe_is_macro with parameters sc_v:
+define action called scribe_is_macro with parameters sc_v and sc_nonce:
     check if (typeof of sc_v) is "Object":
         check if sc_v contains "__scribe_macro__":
-            return yes
+            check if sc_v contains "__scribe_nonce__":
+                return scribe_equals of (sc_v["__scribe_nonce__"]) and sc_nonce
+            end check
         end check
     end check
     return no
@@ -2395,12 +2442,18 @@ end action
 // Call a macro value with a list of already-evaluated arguments. Missing
 // arguments bind to nothing; extra arguments are ignored. Returns safe HTML.
 define action called scribe_call_macro with parameters sc_macro and sc_args and sc_ctx and sc_scope:
-    check if scribe_negate of (scribe_is_macro of sc_macro):
+    store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+    check if scribe_negate of (scribe_is_macro of sc_macro and sc_nonce):
         return "[Scribe error: value is not callable]"
+    end check
+    store sc_depth as scribe_lookup of "__scribe_template_depth__" and sc_ctx and sc_scope
+    check if sc_depth is greater than or equal to 50:
+        return "[Scribe error: maximum template nesting exceeded]"
     end check
     store params as sc_macro["params"]
     store body as sc_macro["body"]
     store save_depth as length of sc_scope
+    push with sc_scope and (scribe_binding of "__scribe_template_depth__" and (sc_depth plus 1))
     // An imported macro carries its home-file nodes so it can call sibling
     // macros defined alongside it, even if only this one was imported.
     check if sc_macro contains "home":
@@ -2420,18 +2473,19 @@ define action called scribe_call_macro with parameters sc_macro and sc_args and 
     repeat while (length of sc_scope) is greater than save_depth:
         store discard as pop of sc_scope
     end repeat
-    return scribe_raw_marker of rendered
+    return scribe_raw_marker of rendered and sc_nonce
 end action
 
 // Collect the top-level macro definitions of a parsed template into a list of
 // bindings { "name": ..., "value": <macro value> }. Each value carries the whole
 // node list as its "home" so it can reach sibling macros when called.
-define action called scribe_macro_bindings with parameters sc_nodes:
+define action called scribe_macro_bindings with parameters sc_nodes and sc_nonce:
     store binds as []
     for each nd in sc_nodes:
         check if (nd["kind"]) is "macro":
             create map mv:
                 "__scribe_macro__" is yes
+                "__scribe_nonce__" is sc_nonce
                 "params" is (nd["params"])
                 "body" is (nd["body"])
                 "home" is sc_nodes
@@ -2453,9 +2507,11 @@ define action called scribe_do_import with parameters sc_node and sc_ctx and sc_
     store path as scribe_to_text of (scribe_eval_expr of (sc_node["path"]) and sc_ctx and sc_scope)
     store src as scribe_read_file of path
     store nds as scribe_parse of (scribe_lex of src)
-    store binds as scribe_macro_bindings of nds
+    store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
+    store binds as scribe_macro_bindings of nds and sc_nonce
     create map nsval:
         "__scribe_ns__" is yes
+        "__scribe_nonce__" is sc_nonce
         "binds" is binds
     end map
     push with sc_scope and (scribe_binding of alias and nsval)
@@ -2468,16 +2524,17 @@ end action
 // variable, say — doesn't silently drop the remaining imports.
 define action called scribe_do_from with parameters sc_node and sc_ctx and sc_scope:
     store names as sc_node["names"]
+    store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
     check if (length of names) is greater than 0:
         store existing as scribe_lookup of (names[0]) and sc_ctx and sc_scope
-        check if scribe_is_macro of existing:
+        check if scribe_is_macro of existing and sc_nonce:
             return yes
         end check
     end check
     store path as scribe_to_text of (scribe_eval_expr of (sc_node["path"]) and sc_ctx and sc_scope)
     store src as scribe_read_file of path
     store nds as scribe_parse of (scribe_lex of src)
-    store binds as scribe_macro_bindings of nds
+    store binds as scribe_macro_bindings of nds and sc_nonce
     for each want in names:
         for each nb in binds:
             check if (nb["name"]) is want:
@@ -2492,12 +2549,13 @@ end action
 // before rendering it, so a macro can be called before its textual definition
 // and imported macros are available throughout the template.
 define action called scribe_hoist_defs with parameters sc_nodes and sc_ctx and sc_scope:
+    store sc_nonce as scribe_lookup of "__scribe_nonce__" and sc_ctx and sc_scope
     for each nd in sc_nodes:
         store k as nd["kind"]
         check if k is "macro":
             store mkey as nd["name"]
             check if scribe_negate of (scribe_scope_has of mkey and sc_scope):
-                push with sc_scope and (scribe_binding of mkey and (scribe_macro_value of nd))
+                push with sc_scope and (scribe_binding of mkey and (scribe_macro_value of nd and sc_nonce))
             end check
         otherwise:
             check if k is "import":
@@ -2555,6 +2613,9 @@ define action called scribe_render with parameters sc_template and sc_context:
     store sc_toks as scribe_lex of sc_template
     store sc_nodes as scribe_parse of sc_toks
     store sc_scope as []
+    store sc_nonce as secure_random_bytes of 16
+    push with sc_scope and (scribe_binding of "__scribe_nonce__" and sc_nonce)
+    push with sc_scope and (scribe_binding of "__scribe_template_depth__" and 0)
     return scribe_render_root of sc_nodes and sc_context and sc_scope
 end action
 

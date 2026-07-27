@@ -29,8 +29,8 @@ secure unless you explicitly opt out.
   explicitly with `{{ trusted | raw }}` — never globally. (WFL Principle 8.)
 - **Pure WFL.** No Rust, no host-language escape hatch. Scribe is one WFL file
   that runs anywhere WFL runs.
-- **Small and tested.** A readable lexer → parser → renderer pipeline with a
-  83-case test suite.
+- **Small and tested.** A readable lexer → parser → renderer pipeline with an
+  89-case test suite.
 
 ## Features
 
@@ -57,7 +57,8 @@ secure unless you explicitly opt out.
   levels deep as you like (child → theme → base)
 - Markdown via the `markdown` filter: headings, paragraphs, lists,
   blockquotes (nested), ``` ``` ``` fenced code blocks, emphasis, inline code,
-  and safe links — escaped first, dangerous URL schemes neutralised
+  and safe links — escaped first, with relative URLs plus `http`, `https`,
+  `mailto`, and `tel` allowed
 - Comments: `{# … #}`
 - Raw blocks: `{% verbatim %}…{% endverbatim %}`
 
@@ -100,6 +101,16 @@ The public API is two actions:
 | `scribe_render_file of path and context` | Read a template **file** from disk, then render it |
 
 The `context` is an ordinary WFL map. Nest maps and lists to model richer data.
+Scribe gives each render a cryptographically random internal provenance token,
+so context maps cannot forge trusted-HTML values, macros, or imported macro
+namespaces by copying their reserved key shapes.
+
+Template source remains trusted application code. In particular, `raw` opts
+out of escaping, and `include`, `import`, `from`, and `extends` read the path the
+template supplies. Do not derive those paths from untrusted input unless the
+application validates them against its own template root first. Includes and
+macro calls share a 50-level nesting budget to prevent cyclic templates from
+exhausting the interpreter stack.
 
 ## Examples
 
@@ -126,7 +137,7 @@ engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 83  Passed: 83  Failed: 0
+# Total: 89  Passed: 89  Failed: 0
 ```
 
 > **Note on WFL's static checker.** The WFL type checker prints some
@@ -138,7 +149,7 @@ tests/run.sh /path/to/wfl
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── tests/scribe.test.wfl     # test suite (83 cases), includes the engine
+├── tests/scribe.test.wfl     # test suite (89 cases), includes the engine
 ├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
 ├── examples/inheritance.wfl  # inheritance example + expected output
