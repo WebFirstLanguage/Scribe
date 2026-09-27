@@ -1,0 +1,65 @@
+name: Scribe CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scribe-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  documentation:
+    name: Documentation checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check changed Markdown whitespace and required documentation
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --check "$BASE_SHA" HEAD -- '*.md'
+          test -s README.md
+          test -s docs/SYNTAX.md
+          test -s docs/DESIGN.md
+      - name: Check documented shell entry points
+        run: bash -n tests/run.sh examples/run.sh
+
+  tests:
+    name: Scribe tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pull WFL runtime and record immutable image
+        id: runtime
+        run: |
+          docker pull bsbyrdwfl/wfl:nightly
+          image="$(docker image inspect --format '{{index .RepoDigests 0}}' bsbyrdwfl/wfl:nightly)"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo "WFL image: $image"
+            docker run --rm --network none "$image" --version
+            echo "Scribe checkout: $(git rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run complete existing Scribe suite in a disposable copy
+        env:
+          WFL_IMAGE: ${{ steps.runtime.outputs.image }}
+        run: |
+          docker run --rm --init --network none \
+            --entrypoint /bin/sh \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --workdir /work "$WFL_IMAGE" -ec '
+              cp -a /source/. /work/
+              mkdir -p build
+              wfl --test tests/scribe.test.wfl
+            '
