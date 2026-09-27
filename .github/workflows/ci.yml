@@ -30,7 +30,9 @@ jobs:
           test -s docs/SYNTAX.md
           test -s docs/DESIGN.md
       - name: Check documented shell entry points
-        run: bash -n tests/run.sh examples/run.sh
+        run: |
+          bash -n tests/run.sh
+          bash -n examples/run.sh
 
   tests:
     name: Scribe tests
