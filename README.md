@@ -30,7 +30,7 @@ secure unless you explicitly opt out.
 - **Pure WFL.** No Rust, no host-language escape hatch. Scribe is one WFL file
   that runs anywhere WFL runs.
 - **Small and tested.** A readable lexer → parser → renderer pipeline with an
-  89-case test suite.
+  101-case test suite.
 
 ## Features
 
@@ -61,6 +61,11 @@ secure unless you explicitly opt out.
   `mailto`, and `tel` allowed
 - Comments: `{# … #}`
 - Raw blocks: `{% verbatim %}…{% endverbatim %}`
+
+There is no inline `if` expression or `switch` tag, but you can get both, and
+load templates only when a page needs them, from the features above. See
+**[Common patterns](docs/SYNTAX.md#common-patterns)** for an inline
+if/then/else, switch/case with a default, and on-demand includes and imports.
 
 See **[docs/SYNTAX.md](docs/SYNTAX.md)** for the full language reference and
 **[docs/DESIGN.md](docs/DESIGN.md)** for the architecture.
@@ -137,7 +142,7 @@ engine with `include from`:
 
 ```sh
 tests/run.sh /path/to/wfl
-# Total: 89  Passed: 89  Failed: 0
+# Total: 101  Passed: 101  Failed: 0
 ```
 
 > **Note on WFL's static checker.** The WFL type checker prints some
@@ -149,7 +154,7 @@ tests/run.sh /path/to/wfl
 ```
 Scribe/
 ├── src/scribe.wfl            # the entire engine (pure library)
-├── tests/scribe.test.wfl     # test suite (89 cases), includes the engine
+├── tests/scribe.test.wfl     # test suite (101 cases), includes the engine
 ├── tests/run.sh              # run the tests with `wfl --test`
 ├── examples/blog.wfl         # worked example + expected output
 ├── examples/inheritance.wfl  # inheritance example + expected output

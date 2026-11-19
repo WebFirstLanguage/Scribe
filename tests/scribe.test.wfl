@@ -684,3 +684,119 @@ describe "striptags across block elements":
     end test
 
 end describe
+
+// These pin the patterns documented under "Common patterns" in docs/SYNTAX.md:
+// choosing between values, switch-style branching, and loading templates only
+// when needed. If one of these breaks, that documentation is now wrong.
+describe "common patterns":
+
+    test "a set inside an if is still visible after endif":
+        store t as "{% set label = 'Guest' %}{% if user.admin %}{% set label = 'Admin' %}{% endif %}{{ label }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Admin"
+    end test
+
+    test "a set inside a for loop does not survive the loop":
+        store t as "{% set last_tag = 'none' %}{% for tg in tags %}{% set last_tag = tg %}{% endfor %}{{ last_tag }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "none"
+    end test
+
+    test "a set inside an empty loop's else is still visible after the loop":
+        create map empty_ctx:
+            "nada" is []
+        end map
+        store t as "{% set seen = 'before' %}{% for x in nada %}{% else %}{% set seen = 'from-else' %}{% endfor %}{{ seen }}"
+        store got as scribe_render of t and empty_ctx
+        expect got to equal "from-else"
+    end test
+
+    test "importing a second file under an alias already in use keeps the first":
+        open file at "build/_sc_alias_a.tmp" for writing as faa
+        wait for write content "{% macro hi(n) %}A:{{ n }}{% endmacro %}" into faa
+        close file faa
+        open file at "build/_sc_alias_b.tmp" for writing as fab
+        wait for write content "{% macro hi(n) %}B:{{ n }}{% endmacro %}" into fab
+        close file fab
+        store t as "{% import 'build/_sc_alias_a.tmp' as ui %}{% import 'build/_sc_alias_b.tmp' as ui %}{{ ui.hi('z') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "A:z"
+    end test
+
+    test "a pick macro works as a one-line if/then/else":
+        store t as "{% macro pick(c, a, b) %}{% if c %}{{ a }}{% else %}{{ b }}{% endif %}{% endmacro %}[{{ pick(user.admin, 'Admin', 'Guest') }}|{{ pick(blank, 'yes', 'no') }}]"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "[Admin|no]"
+    end test
+
+    test "a pick macro still escapes the value it prints":
+        store t as "{% macro pick(c, a, b) %}{% if c %}{{ a }}{% else %}{{ b }}{% endif %}{% endmacro %}{{ pick(true, title, '') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Tom &amp; Jerry &lt;fun&gt;"
+    end test
+
+    test "a switch-style macro picks a branch or falls through to its default":
+        store t as "{% macro badge(s) %}{% if s == 'paid' %}PAID{% elseif s == 'late' %}LATE{% else %}OTHER{% endif %}{% endmacro %}{{ badge('late') }}/{{ badge('paid') }}/{{ badge('refunded') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "LATE/PAID/OTHER"
+    end test
+
+    test "an include path built from a variable selects one partial per case":
+        open file at "build/_sc_case_paid.tmp" for writing as fcp
+        wait for write content "<b>paid</b>" into fcp
+        close file fcp
+        open file at "build/_sc_case_late.tmp" for writing as fcl
+        wait for write content "<i>late</i>" into fcl
+        close file fcl
+        create map case_ctx:
+            "status" is "late"
+        end map
+        store got as scribe_render of "{% include 'build/_sc_case_' ~ status ~ '.tmp' %}" and case_ctx
+        expect got to equal "<i>late</i>"
+    end test
+
+    test "guarding a per-case include gives unknown values a default":
+        open file at "build/_sc_case_paid.tmp" for writing as fgp
+        wait for write content "<b>paid</b>" into fgp
+        close file fgp
+        open file at "build/_sc_case_default.tmp" for writing as fgd
+        wait for write content "<s>unknown</s>" into fgd
+        close file fgd
+        store t as "{% if status == 'paid' or status == 'late' %}{% include 'build/_sc_case_' ~ status ~ '.tmp' %}{% else %}{% include 'build/_sc_case_default.tmp' %}{% endif %}"
+        create map known_ctx:
+            "status" is "paid"
+        end map
+        create map unknown_ctx:
+            "status" is "../../secrets"
+        end map
+        store got as (scribe_render of t and known_ctx) with "|" with (scribe_render of t and unknown_ctx)
+        expect got to equal "<b>paid</b>|<s>unknown</s>"
+    end test
+
+    test "an import path can come from a variable":
+        open file at "build/_sc_patlib.tmp" for writing as fpl
+        wait for write content "{% macro hi(n) %}Hi {{ n }}{% endmacro %}" into fpl
+        close file fpl
+        create map lib_ctx:
+            "libname" is "build/_sc_patlib.tmp"
+        end map
+        store got as scribe_render of "{% import libname as ui %}{{ ui.hi('Sam') }}" and lib_ctx
+        expect got to equal "Hi Sam"
+    end test
+
+    test "an import inside a branch that runs is usable within that branch":
+        open file at "build/_sc_patlib2.tmp" for writing as fpl2
+        wait for write content "{% macro hi(n) %}Hi {{ n }}{% endmacro %}" into fpl2
+        close file fpl2
+        store t as "{% if user.admin %}{% import 'build/_sc_patlib2.tmp' as ui %}{{ ui.hi(user.name) }}{% endif %}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "Hi Alice"
+    end test
+
+    test "an include or import in a branch that does not run is never read":
+        store t as "{% if false %}{% import 'build/_sc_never_written.tmp' as nope %}{% include 'build/_sc_never_written.tmp' %}{% endif %}ok"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "ok"
+    end test
+
+end describe
