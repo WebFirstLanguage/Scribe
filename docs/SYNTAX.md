@@ -179,7 +179,9 @@ false; everything else is true.
 ```
 
 `set` binds a variable in the current scope. Inside a `for` loop the binding
-is scoped to the loop body.
+is scoped to the loop body. Inside an `{% if %}` it is not, so you can set a
+value in a branch and use it after `{% endif %}` — see
+[Where a `set` is visible](#where-a-set-is-visible).
 
 ---
 
@@ -203,7 +205,9 @@ Render another template file inline, sharing the current context:
 ```
 
 The path is an expression, so `{% include partial_name %}` (a variable) works
-too. Paths are resolved relative to the process's working directory.
+too — including one partial per case, as shown in
+[Picking one of several branches](#picking-one-of-several-branches-switch--case).
+Paths are resolved relative to the process's working directory.
 
 Template source is trusted application code. Scribe does not impose a
 filesystem sandbox: never derive include, import, or inheritance paths from
@@ -336,6 +340,126 @@ Everything between `{% verbatim %}` and `{% endverbatim %}` is copied as-is.
 
 ---
 
+## Common patterns
+
+Scribe has no inline `if` expression and no `switch` tag. You rarely need
+them: variables, `{% if %}`, macros, and computed include paths cover the same
+ground. Each pattern below is pinned by a test in the "common patterns" group of
+`tests/scribe.test.wfl`.
+
+### Choosing between two values (if / then / else)
+
+Set a default, then change it inside an `{% if %}`:
+
+```twig
+{% set label = 'Guest' %}
+{% if user.admin %}{% set label = 'Admin' %}{% endif %}
+<span>{{ label }}</span>
+```
+
+This works because `{% if %}` does not start a new scope: a `set` inside it is
+still visible after `{% endif %}`. A `for` loop, an include, and a macro *do*
+start one (see [Where a `set` is visible](#where-a-set-is-visible)).
+
+For a one-liner, define a small `pick` macro once and call it wherever you need
+an inline if/then/else:
+
+```twig
+{% macro pick(cond, then_value, else_value) %}{% if cond %}{{ then_value }}{% else %}{{ else_value }}{% endif %}{% endmacro %}
+
+<span>{{ pick(user.admin, 'Admin', 'Guest') }}</span>
+<li class="{{ pick(loop.first, 'first', '') }}">…</li>
+```
+
+* The value it prints is still HTML-escaped.
+* Keep the macro on one line. Scribe has no whitespace control yet, so any line
+  break inside the macro body ends up in its output.
+* Both values are evaluated before the choice is made. For plain values and
+  paths that is harmless — a missing path is simply empty.
+* Keep it in a helpers file and pull it in where needed:
+  `{% from "helpers.html" import pick %}`.
+
+### Picking one of several branches (switch / case)
+
+Chain `elseif`s. The `else` is the default case:
+
+```twig
+{% if order.status == 'paid' %}
+  <span class="ok">Paid</span>
+{% elseif order.status == 'late' %}
+  <span class="warn">Overdue</span>
+{% else %}
+  <span>{{ order.status }}</span>
+{% endif %}
+```
+
+If the same switch is needed in more than one place, wrap it in a macro so each
+use is a single line:
+
+```twig
+{% macro status_badge(s) %}{% if s == 'paid' %}<span class="ok">Paid</span>{% elseif s == 'late' %}<span class="warn">Overdue</span>{% else %}<span>{{ s }}</span>{% endif %}{% endmacro %}
+
+{{ status_badge(order.status) }}
+```
+
+When each case is big enough to deserve its own file, build the include path
+from the value:
+
+```twig
+{% include 'partials/status_' ~ order.status ~ '.html' %}
+```
+
+Two cautions with this form:
+
+* **A value with no matching file stops the render.** The missing file raises a
+  runtime error; there is no skip-if-missing option yet.
+* **The value becomes part of a file path.** If it can come from users or other
+  outside data, it can be steered at a different file (`../../config`).
+
+Guarding the include with the cases you expect fixes both, and gives unknown
+values a default:
+
+```twig
+{% if order.status == 'paid' or order.status == 'late' %}
+  {% include 'partials/status_' ~ order.status ~ '.html' %}
+{% else %}
+  {% include 'partials/status_other.html' %}
+{% endif %}
+```
+
+### Loading templates only when you need them
+
+* `{% include %}` and `{% import %}` paths are expressions, so they can come
+  from a variable: `{% include sidebar %}`, `{% import theme_lib as ui %}`. The
+  path caution above applies here too.
+* An include or import inside an `{% if %}` branch is read only if that branch
+  runs. Use this to load a partial or macro library just for the pages that
+  need it:
+
+  ```twig
+  {% if user.admin %}
+    {% import 'admin/widgets.html' as admin %}
+    {{ admin.toolbar(user) }}
+  {% endif %}
+  ```
+
+* Paths resolve against the process's working directory, not the template's
+  own folder.
+* Nothing is cached: an include inside a `for` loop re-reads and re-parses its
+  file on every pass.
+
+### Where a `set` is visible
+
+| A `set` made inside… | Still visible after it ends? |
+| --- | --- |
+| the top level of a template | yes, for the rest of the render |
+| `{% if %}` / `{% elseif %}` / `{% else %}` | yes |
+| `{% for %}` | no — dropped when the loop ends |
+| an included partial | no |
+| a macro | no |
+
+---
+
 ## Calling the engine from WFL
 
 ```wfl
@@ -365,6 +489,12 @@ paths in the template walk them.
   iteration); iterate lists instead.
 * No whitespace control (`{{-` / `-}}`) yet — see the roadmap in
   [DESIGN.md](DESIGN.md).
+* No inline conditional expression (`{{ a if cond else b }}`) and no `switch`
+  tag. See [Common patterns](#common-patterns) for the equivalents.
+* A missing `include`, `import`, `from`, or `extends` file raises a runtime
+  error that stops the render. There is no skip-if-missing option.
+* No template root folder: paths resolve against the process's working
+  directory, and Scribe does not confine them to any folder.
 * The `markdown` filter renders a deliberately small subset (headings,
   paragraphs, unordered lists, blockquotes, fenced code blocks, `**bold**`,
   `*italic*`, `` `code` ``, and `[links](url)`); it is not a full CommonMark
