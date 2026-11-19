@@ -432,6 +432,11 @@ values a default:
 * `{% include %}` and `{% import %}` paths are expressions, so they can come
   from a variable: `{% include sidebar %}`, `{% import theme_lib as ui %}`. The
   path caution above applies here too.
+* For `{% import %}` and `{% from %}`, that variable must come from the data you
+  pass to `scribe_render`, not from a `{% set %}` in the same template. Imports
+  are processed before the template's `set` tags run, so the path would still
+  be empty and the render stops. `{% include %}` runs in order, so a `set`
+  path works there.
 * An include or import inside an `{% if %}` branch is read only if that branch
   runs. Use this to load a partial or macro library just for the pages that
   need it:
@@ -445,8 +450,12 @@ values a default:
 
 * Paths resolve against the process's working directory, not the template's
   own folder.
-* Nothing is cached: an include inside a `for` loop re-reads and re-parses its
-  file on every pass.
+* Includes are not cached: an include inside a `for` loop re-reads and
+  re-parses its file on every pass.
+* An import is skipped when its alias is already in use. Importing a second
+  file under the same name (`{% import 'b.html' as ui %}` after
+  `{% import 'a.html' as ui %}`) keeps the first file's macros; give each
+  library its own alias.
 
 ### Where a `set` is visible
 
@@ -454,7 +463,8 @@ values a default:
 | --- | --- |
 | the top level of a template | yes, for the rest of the render |
 | `{% if %}` / `{% elseif %}` / `{% else %}` | yes |
-| `{% for %}` | no — dropped when the loop ends |
+| a `{% for %}` loop body | no — dropped when the loop ends |
+| a `{% for %}`'s `{% else %}` (the list was empty) | yes |
 | an included partial | no |
 | a macro | no |
 

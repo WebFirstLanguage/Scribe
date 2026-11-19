@@ -702,6 +702,27 @@ describe "common patterns":
         expect got to equal "none"
     end test
 
+    test "a set inside an empty loop's else is still visible after the loop":
+        create map empty_ctx:
+            "nada" is []
+        end map
+        store t as "{% set seen = 'before' %}{% for x in nada %}{% else %}{% set seen = 'from-else' %}{% endfor %}{{ seen }}"
+        store got as scribe_render of t and empty_ctx
+        expect got to equal "from-else"
+    end test
+
+    test "importing a second file under an alias already in use keeps the first":
+        open file at "build/_sc_alias_a.tmp" for writing as faa
+        wait for write content "{% macro hi(n) %}A:{{ n }}{% endmacro %}" into faa
+        close file faa
+        open file at "build/_sc_alias_b.tmp" for writing as fab
+        wait for write content "{% macro hi(n) %}B:{{ n }}{% endmacro %}" into fab
+        close file fab
+        store t as "{% import 'build/_sc_alias_a.tmp' as ui %}{% import 'build/_sc_alias_b.tmp' as ui %}{{ ui.hi('z') }}"
+        store got as scribe_render of t and t_ctx
+        expect got to equal "A:z"
+    end test
+
     test "a pick macro works as a one-line if/then/else":
         store t as "{% macro pick(c, a, b) %}{% if c %}{{ a }}{% else %}{{ b }}{% endif %}{% endmacro %}[{{ pick(user.admin, 'Admin', 'Guest') }}|{{ pick(blank, 'yes', 'no') }}]"
         store got as scribe_render of t and t_ctx
